@@ -42,8 +42,9 @@ same in a POSIX shell, PowerShell or Command Prompt:
 node server.mjs
 ```
 
-Use any current Chrome, Firefox, Edge or Safari. To pick another port, set
-`PORT` (`PORT=7330 node server.mjs`; PowerShell: `$env:PORT=7330; node server.mjs`).
+Use any current Chrome, Firefox, Edge or Safari. CI runs this suite on Linux,
+macOS and Windows for Node 18 and 22. To pick another port, set `PORT`
+(`PORT=7330 node server.mjs`; PowerShell: `$env:PORT=7330; node server.mjs`).
 
 ## Why it exists
 
