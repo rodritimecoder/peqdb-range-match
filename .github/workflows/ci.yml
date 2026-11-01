@@ -13,14 +13,11 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         node: [18, 22]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - uses: actions/cache@v4
-        with:
-          path: data
-          key: peqdb-data-${{ runner.os }}-v1
+      - run: node ci-fixture.mjs
       - run: node ci-smoke.mjs
