@@ -3,6 +3,8 @@
 Closest-graph search over a frequency band you choose, built on the same data
 `peqdb.com/studio` uses for its **Find closest** button.
 
+[![ci](https://github.com/rodritimecoder/peqdb-range-match/actions/workflows/ci.yml/badge.svg)](https://github.com/rodritimecoder/peqdb-range-match/actions/workflows/ci.yml)
+
 ![screenshot](docs/screenshot.png)
 
 Two modes:
@@ -29,6 +31,19 @@ Open <http://127.0.0.1:7319>.
 First start downloads `graph-data.bin` (20.3 MB, 26,149 graphs) from peqdb.com,
 extracts the 15 target curves into `data/targets.json`, and caches both. Later
 starts are offline. `data/` is gitignored; nothing is bundled.
+
+## Platforms
+
+Linux, macOS and Windows. The server is plain Node — no native modules, no
+shell-outs, no POSIX-only APIs — and it binds loopback only. The command is the
+same in a POSIX shell, PowerShell or Command Prompt:
+
+```sh
+node server.mjs
+```
+
+Use any current Chrome, Firefox, Edge or Safari. To pick another port, set
+`PORT` (`PORT=7330 node server.mjs`; PowerShell: `$env:PORT=7330; node server.mjs`).
 
 ## Why it exists
 

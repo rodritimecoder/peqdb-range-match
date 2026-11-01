@@ -73,7 +73,7 @@ async function loadPhoneBooks(sites) {
   for (const site of sites) {
     for (const db of site.dbs ?? []) {
       const folder = db.folder.endsWith('/') ? db.folder : `${db.folder}/`;
-      const path = join(CACHE, 'phonebooks', `${site.username}${folder.replace(/[^a-z]/gi, '_')}.json`);
+      const path = join(CACHE, 'phonebooks', `${site.username}${folder}`.replace(/[^a-z0-9._-]/gi, '_') + '.json');
       try {
         const book = await cachedFetch(`${siteBase(site)}${folder}data/phone_book.json`, path);
         if (!Array.isArray(book)) throw new Error('phone book is not an array');
