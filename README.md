@@ -71,6 +71,32 @@ rmse = sqrt(mean((cand[i] - ref[i])^2))     dB, lower is better
 from 20 Hz to 20 kHz, so equal weight per point already means equal weight per
 octave.
 
+Raw RMSE answers "which graph is closest", not "which is easiest to EQ". The
+**Score** selector switches to the 5-band EQ residual below.
+
+## Treble EQ mode
+
+A broad tilt costs one shelf; a narrow resonance may cost nothing you can
+actually apply. **Treble EQ (5 bands)** ranks by what is left after a realistic
+EQ fit:
+
+- the deviation from the reference is fitted with 5 broad peaking bands
+  (½-octave centres, Q 0.7–1.4)
+- gains are limited to **+3 / −9 dB** (cuts deeper than boosts)
+- the score is the RMS residual over the band, so broad errors are cheap and
+  narrow ones remain
+
+The table adds **Gain** (largest filter used), **Peak** (worst residual point)
+and **Rough** (RMS of the deviation after 1/6-octave smoothing, a pure
+smoothness diagnostic). Selecting the mode narrows the band to 2k–20k when it
+was wider; any band still works.
+
+**Group by model (median)** collapses the per-measurement rows into one row per
+model, using the median score and the median rig's curve; `min n` hides models
+with fewer than that many measurements. Measurement spread is real: the Simgot
+EM6L ranges from 0.66 to 3.22 dB over its 11 measurements, so one smooth rig is
+not the model.
+
 ## Default reference
 
 The peqdb tab opens with the **PEQdB Diamond** target as its reference, so the
@@ -155,7 +181,8 @@ http://127.0.0.1:7319/?ref=moondrop%20variations&lo=1000&hi=20000&cat=IE&top=50&
 ```
 
 `ref` is matched by word against model and variant, then against the target
-names; the first catalogue hit wins.
+names; the first catalogue hit wins. Add `mode=eq` for the Treble EQ score,
+`group=1` to collapse by model, and `minn=2` for the minimum measurement count.
 
 ## Test
 
@@ -163,6 +190,10 @@ names; the first catalogue hit wins.
 node server.mjs     # once, so data/ exists
 node test.mjs
 ```
+
+The suite covers decode/normalise/band maths, raw RMSE, the 5-band EQ fit
+(broad bump, comb, narrow spike), roughness, the Diamond default, and the squig
+record/phone-book encoders.
 
 ## Data and attribution
 

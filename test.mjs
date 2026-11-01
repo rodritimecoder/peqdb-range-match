@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { anchor, averageChannels, bandIndices, decodeCurve, parseCurveText, scoreBand, FREQS, N } from './public/core.mjs';
+import { eqResidual, makeEqBank, roughness } from './public/eq.mjs';
 import { encodeRecord, phoneStems } from './build-squig.mjs';
 
 const read = async (name) => {
@@ -83,6 +84,29 @@ console.log(`\nparser: ${parsed.points} rows -> grid ${parsed.grid.length} pts, 
 if (Math.abs(parsed.grid[0]) > 0.001) throw new Error('parser clamp wrong at 20 Hz');
 if (parsed.grid.length !== N) throw new Error('parser grid size wrong');
 
+const [ea, eb] = bandIndices(2000, 20000);
+const eqBank = makeEqBank(ea, eb);
+const eqN = eb - ea + 1;
+const bump = (width) => Float64Array.from({ length: eqN }, (_, i) => 3 * Math.exp(-0.5 * ((i - eqN / 2) / width) ** 2));
+const broadFit = eqResidual(bump(20), eqBank);
+const combFit = eqResidual(Float64Array.from({ length: eqN }, (_, i) => (i % 8 < 2 ? 3 : 0)), eqBank);
+const spikeFit = eqResidual(bump(1.2), eqBank);
+const flatFit = eqResidual(new Float64Array(eqN), eqBank);
+const hugeFit = eqResidual(Float64Array.from({ length: eqN }, () => 20), eqBank);
+console.log(`EQ fit: broad ${broadFit.rms.toFixed(3)} dB, comb ${combFit.rms.toFixed(3)} dB, spike peak ${spikeFit.maxDev.toFixed(2)} dB, flat ${flatFit.rms}`);
+if (flatFit.rms !== 0) throw new Error('flat deviation should fit to zero');
+if (broadFit.rms > 0.5) throw new Error('broad bump should fit within 0.5 dB');
+if (combFit.rms <= broadFit.rms + 0.2) throw new Error('comb should leave more residual than a broad bump');
+if (spikeFit.maxDev < 2) throw new Error('narrow spike should leave a peak residual');
+if (hugeFit.maxGain > 3.0001) throw new Error('boost limit not applied');
+
+const smoothDev = Float64Array.from({ length: N }, (_, k) => Math.sin(k / 40) * 2);
+const jaggedDev = Float64Array.from({ length: N }, (_, k) => (k % 2 ? 1 : -1) * 2);
+const rSmooth = roughness(smoothDev, ea, eb);
+const rJagged = roughness(jaggedDev, ea, eb);
+console.log(`roughness: smooth ${rSmooth.toFixed(3)} dB, jagged ${rJagged.toFixed(3)} dB`);
+if (!(rSmooth < rJagged)) throw new Error('roughness should rank smooth below jagged');
+
 const synth = new Float64Array(N);
 for (let k = 0; k < N; k++) synth[k] = Math.sin(k / 21) * 18 - Math.cos(k / 85) * 24;
 const record = encodeRecord(Float64Array.from(synth, Number));
@@ -111,4 +135,4 @@ for (const { phone, want } of stemCases) {
 }
 console.log(`phoneStems: ${stemCases.length} schema shapes expanded correctly`);
 
-console.log('\nOK — decode, normalise, band, scoring, sorting, parser, Diamond default, squig encoding and phone-book variants all verified');
+console.log('\nOK — decode, normalise, band, scoring, EQ fit, sorting, parser, Diamond default, squig encoding and phone-book variants all verified');

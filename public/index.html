@@ -23,6 +23,8 @@
   .card + .card { margin-top: 14px; }
   label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 12px 0 5px; }
   label:first-child { margin-top: 0; }
+  .check { display: flex; align-items: center; gap: 7px; text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--text); margin: 10px 0 0; cursor: pointer; }
+  .check input { accent-color: var(--accent); margin: 0; }
   input[type=text], input[type=number], select {
     width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--line);
     border-radius: 7px; padding: 7px 9px; font: inherit; font-family: var(--mono); font-size: 13px;
@@ -121,6 +123,7 @@
       <input type="range" id="hiR" min="0" max="1000" value="1000" />
       <div class="presets">
         <button data-lo="1000" data-hi="20000">1k–20k</button>
+        <button data-lo="2000" data-hi="20000">2k–20k</button>
         <button data-lo="20" data-hi="20000">20–20k</button>
         <button data-lo="2000" data-hi="8000">2k–8k</button>
         <button data-lo="6000" data-hi="12000">6k–12k</button>
@@ -128,6 +131,21 @@
       </div>
       <label>Anchor normalisation (Hz)</label>
       <input type="number" id="anchor" value="1000" min="20" max="20000" step="10" />
+      <label>Score</label>
+      <select id="mode">
+        <option value="rmse">raw RMSE (closest)</option>
+        <option value="eq">Treble EQ (5 bands)</option>
+      </select>
+      <label class="check"><input type="checkbox" id="group" /> group by model (median)</label>
+      <div class="row" id="minNRow" style="margin-top:6px;display:none;align-items:center">
+        <span style="flex:0 0 auto;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px">min n</span>
+        <select id="minN" style="flex:0 0 64px;padding:3px 6px;font-size:12px">
+          <option value="1">1</option>
+          <option value="2" selected>2</option>
+          <option value="3">3</option>
+          <option value="5">5</option>
+        </select>
+      </div>
       <label>Results to keep</label>
       <input type="number" id="top" value="50" min="1" max="500" step="10" />
       <div class="row" style="margin-top:14px">
@@ -148,7 +166,7 @@
       <div class="head"><h2>Ranking</h2><span class="status" id="count"></span></div>
       <div class="scroll">
         <table>
-          <thead><tr><th style="width:34px">#</th><th style="width:86px">RMSE dB</th><th style="width:74px">Δmean</th><th style="width:66px">max</th><th>Model / variant</th><th style="width:150px">Source</th></tr></thead>
+          <thead id="thead"><tr><th style="width:34px">#</th><th style="width:86px">RMSE dB</th><th style="width:74px">Δmean</th><th style="width:66px">max</th><th>Model / variant</th><th style="width:150px">Source</th></tr></thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
@@ -158,10 +176,11 @@
 
 <script type="module">
 import { FREQS, N, F_MIN, F_MAX, anchor, averageChannels, bandIndices, levelAt, parseCurveText, scoreBand } from './core.mjs';
+import { eqResidual, makeEqBank, roughness } from './eq.mjs';
 
 const $ = (id) => document.getElementById(id);
 const COLORS = ['#7cc4ff', '#6ee7a8', '#ffb86b', '#f78fb3', '#b39dff', '#4fd1c5', '#f6e05e'];
-const state = { ds: 'peqdb', refs: { peqdb: null, squig: null }, index: null, buf: null, catalog: [], meta: null, results: [], full: [], active: -1, ref: null };
+const state = { ds: 'peqdb', refs: { peqdb: null, squig: null }, index: null, buf: null, catalog: [], meta: null, results: [], full: [], active: -1, ref: null, mode: 'rmse', group: false, minN: 2 };
 const squigStore = { loaded: false, loading: null, sites: [], entries: [], targets: [], targetsLoading: null, meta: null, buf: null };
 const DEFAULT_TARGET = 'PEQdB Diamond';
 
@@ -171,6 +190,12 @@ function label(entry) {
 }
 
 function isSquig() { return state.ds === 'squig'; }
+
+function scoreHint() {
+  return state.mode === 'eq'
+    ? 'Score = residual after 5 broad EQ bands (+3/−9 dB) over the band. Lower is easier to EQ.'
+    : 'Score = raw RMSE in dB across the band. No mean-offset removal, so a level difference counts against the candidate.';
+}
 
 const toSlider = (hz) => Math.round(1000 * Math.log(hz / F_MIN) / Math.log(F_MAX / F_MIN));
 const fromSlider = (v) => F_MIN * Math.pow(F_MAX / F_MIN, v / 1000);
@@ -217,6 +242,7 @@ async function boot() {
   window.__dbg = { state, levelAt, report };
   await loadTargets();
   await applyParams();
+  renderHead();
   const p = new URLSearchParams(location.search);
   if (p.get('ds') === 'squig') switchDs('squig');
   else if (!state.refs.peqdb) await applyTargetDefault('peqdb');
@@ -233,6 +259,20 @@ async function applyParams() {
   }
   if (p.get('anchor')) $('anchor').value = Math.round(clampF(Number(p.get('anchor'))));
   if (p.get('top')) $('top').value = Number(p.get('top')) || 50;
+  if (p.get('mode') === 'eq') $('mode').value = 'eq';
+  if (p.get('group') === '1') { $('group').checked = true; state.group = true; }
+  if (p.get('minn')) $('minN').value = p.get('minn');
+  state.minN = Number($('minN').value);
+  $('minNRow').style.display = state.group ? 'flex' : 'none';
+  state.mode = $('mode').value;
+  if (state.mode === 'eq' && !p.has('lo') && Number($('lo').value) < 2000) {
+    $('lo').value = 2000;
+    $('hi').value = 20000;
+    $('loR').value = toSlider(2000);
+    $('hiR').value = toSlider(20000);
+  }
+  $('run').textContent = state.mode === 'eq' ? 'Find easiest' : 'Find closest';
+  $('hint').textContent = scoreHint();
   const ref = p.get('ref');
   if (!ref) return;
   const cat = $('cat').value;
@@ -305,7 +345,7 @@ function pick(entry) {
   p.textContent = `${label(entry)} — ${entry.source} (${entry.cat})`;
   $('matches').style.display = 'none';
   $('q').value = '';
-  $('hint').textContent = 'Score = raw RMSE in dB across the band. No mean-offset removal, so a level difference counts against the candidate.';
+  $('hint').textContent = scoreHint();
   run();
 }
 
@@ -318,10 +358,10 @@ function pickTarget(target, ds = 'squig') {
   p.classList.remove('empty');
   p.textContent = `${target.name} — PEQdB ${target.group === target.name ? 'target' : target.group} (${target.kind})`;
   if (ds === 'squig') {
-    $('hint').textContent = 'Candidates are community squig measurements (L/R averaged). Raw RMSE in dB against the target over the band.';
+    $('hint').textContent = `Candidates are community squig measurements (L/R averaged). ${scoreHint()}`;
     if (!['IE', 'OE', 'BOTH'].includes($('sCat').value) || target.kind === 'OE') $('sCat').value = target.kind;
   } else {
-    $('hint').textContent = `Reference is the ${target.name} target. Score = raw RMSE in dB across the band.`;
+    $('hint').textContent = `Reference is the ${target.name} target. ${scoreHint()}`;
   }
   run();
 }
@@ -350,7 +390,7 @@ function pickFile(file) {
       p.textContent = `${file.name} — ${parsed.points} points, ${Math.round(parsed.coverage[0])}–${Math.round(parsed.coverage[1])} Hz`;
       $('hint').textContent = parsed.coverage[1] < Number($('hi').value)
         ? `⚠ your file stops at ${Math.round(parsed.coverage[1])} Hz; the grid is flat above that, so the top of the band is not real data`
-        : 'Score = raw RMSE in dB across the band. No mean-offset removal, so a level difference counts against the candidate.';
+        : scoreHint();
       run();
     } catch (err) {
       $('hint').textContent = `⚠ ${err.message}`;
@@ -359,7 +399,7 @@ function pickFile(file) {
   reader.readAsText(file);
 }
 
-function run() {
+async function run() {
   if (!state.ref || !state.buf) return;
   const lo = clampF(Number($('lo').value));
   const hi = clampF(Number($('hi').value));
@@ -371,43 +411,113 @@ function run() {
   const ref = anchor(state.ref.grid, anchorHz);
   const skip = isSquig() ? null : state.ref.entry.start;
   const skipModel = state.ref.entry.model;
+  const [a, b] = bandIndices(lo, hi);
+  const eqMode = state.mode === 'eq';
+  const bank = eqMode ? makeEqBank(a, b) : null;
+
+  $('status').textContent = 'scoring…';
+  $('run').disabled = true;
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   const t0 = performance.now();
   const cands = [];
   for (const e of state.catalog) {
     if (cat !== 'BOTH' && e.cat !== cat) continue;
+    if (/^_EQ|sandbox/i.test(e.model)) continue;
     if (!isSquig() && e.kind !== 'file' && e.start === skip && e.model === skipModel) continue;
     const curve = anchor(entryCurve(e), anchorHz);
     const s = scoreBand(ref, curve, lo, hi);
-    if (Number.isFinite(s.rmse)) cands.push({ entry: e, curve, ...s });
+    if (!Number.isFinite(s.rmse)) continue;
+    const dev = new Float64Array(N);
+    for (let k = 0; k < N; k++) dev[k] = curve[k] - ref[k];
+    const eq = bank ? eqResidual(dev.subarray(a, b + 1), bank) : null;
+    cands.push({ entry: e, curve, ...s, eq, rough: roughness(dev, a, b), score: eq ? eq.rms : s.rmse });
   }
-  cands.sort((a, b) => a.rmse - b.rmse);
-  state.results = cands.slice(0, top);
+  cands.sort((x, y) => x.score - y.score);
+  const grouped = state.group ? groupModels(cands) : cands;
   state.full = cands;
+  state.results = grouped.slice(0, top);
   state.active = -1;
 
   const dt = performance.now() - t0;
-  const [a, b] = bandIndices(lo, hi);
-  $('status').textContent = `${(b - a + 1)} pts · ${cands.length.toLocaleString()} compared · ${dt.toFixed(0)} ms`;
-  $('count').textContent = `${top} shown of ${cands.length.toLocaleString()}`;
+  $('status').textContent = `${b - a + 1} pts · ${cands.length.toLocaleString()} compared · ${dt.toFixed(0)} ms${eqMode ? ' · 5-band +3/−9 dB' : ''}`;
+  $('count').textContent = state.group
+    ? `${state.results.length} models of ${grouped.length.toLocaleString()}`
+    : `${state.results.length} shown of ${cands.length.toLocaleString()}`;
+  $('run').disabled = false;
   $('dl').disabled = false;
+  renderHead();
   renderRows(ref);
   draw(ref, lo, hi);
+}
+
+function groupModels(rows) {
+  const map = new Map();
+  for (const r of rows) {
+    const key = r.entry.model.toUpperCase().replace(/\s+/g, ' ').trim();
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(r);
+  }
+  const median = (rs, fn) => {
+    const xs = rs.map(fn).sort((p, q) => p - q);
+    return xs[Math.floor(xs.length / 2)];
+  };
+  const out = [];
+  for (const [key, rs] of map) {
+    if (rs.length < state.minN) continue;
+    rs.sort((x, y) => x.score - y.score);
+    const rep = rs[Math.floor(rs.length / 2)];
+    out.push({
+      ...rep,
+      score: median(rs, (r) => r.score),
+      rmse: median(rs, (r) => r.rmse),
+      meanDev: median(rs, (r) => r.meanDev),
+      maxDev: median(rs, (r) => r.maxDev),
+      rough: median(rs, (r) => r.rough),
+      eq: rep.eq ? {
+        rms: median(rs, (r) => r.eq.rms),
+        maxGain: median(rs, (r) => r.eq.maxGain),
+        maxDev: median(rs, (r) => r.eq.maxDev),
+        bands: rep.eq.bands,
+      } : null,
+      group: { key, count: rs.length, min: rs[0].score, max: rs[rs.length - 1].score },
+    });
+  }
+  return out.sort((x, y) => x.score - y.score);
+}
+
+function renderHead() {
+  $('thead').innerHTML = state.mode === 'eq'
+    ? '<tr><th style="width:34px">#</th><th style="width:86px">EQ dB</th><th style="width:64px">Gain</th><th style="width:64px">Peak</th><th style="width:70px">Rough</th><th>Model / variant</th><th style="width:150px">Source</th></tr>'
+    : '<tr><th style="width:34px">#</th><th style="width:86px">RMSE dB</th><th style="width:74px">Δmean</th><th style="width:66px">max</th><th style="width:70px">Rough</th><th>Model / variant</th><th style="width:150px">Source</th></tr>';
 }
 
 function renderRows(ref) {
   const tb = $('rows');
   tb.innerHTML = '';
-  const best = state.results[0]?.rmse || 1;
+  const eqMode = state.mode === 'eq';
+  const best = state.results[0]?.score || 1;
   state.results.forEach((r, i) => {
     const tr = document.createElement('tr');
     const color = COLORS[i % COLORS.length];
-    tr.innerHTML = `<td>${i + 1}</td>
-      <td><span class="score">${r.rmse.toFixed(3)}</span><div class="bar"><i style="width:${Math.min(100, (r.rmse / best) * 100)}%;background:${color}"></i></div></td>
-      <td>${r.meanDev >= 0 ? '+' : ''}${r.meanDev.toFixed(2)}</td>
-      <td>${r.maxDev.toFixed(1)}</td>
-      <td class="name"><span class="thumb" style="background:${color}"></span>${label(r.entry)}</td>
-      <td><span class="src">${r.entry.source} · ${r.entry.cat}</span></td>`;
+    const name = r.group
+      ? `${r.entry.model} <span class="src">· n=${r.group.count}</span>`
+      : label(r.entry);
+    const source = r.group
+      ? `${r.entry.source} · ${r.group.min.toFixed(2)}–${r.group.max.toFixed(2)}`
+      : `${r.entry.source} · ${r.entry.cat}`;
+    const metric = eqMode
+      ? `<td><span class="score">${r.score.toFixed(3)}</span><div class="bar"><i style="width:${Math.min(100, (r.score / best) * 100)}%;background:${color}"></i></div></td>
+         <td>${r.eq ? `${r.eq.maxGain >= 0 ? '+' : ''}${r.eq.maxGain.toFixed(1)}` : '—'}</td>
+         <td>${r.eq ? r.eq.maxDev.toFixed(1) : '—'}</td>
+         <td>${r.rough.toFixed(2)}</td>`
+      : `<td><span class="score">${r.rmse.toFixed(3)}</span><div class="bar"><i style="width:${Math.min(100, (r.rmse / best) * 100)}%;background:${color}"></i></div></td>
+         <td>${r.meanDev >= 0 ? '+' : ''}${r.meanDev.toFixed(2)}</td>
+         <td>${r.maxDev.toFixed(1)}</td>
+         <td>${r.rough.toFixed(2)}</td>`;
+    tr.innerHTML = `<td>${i + 1}</td>${metric}
+      <td class="name"><span class="thumb" style="background:${color}"></span>${name}</td>
+      <td><span class="src">${source}</span></td>`;
     tr.onclick = () => { state.active = state.active === i ? -1 : i; [...tb.children].forEach((c) => c.classList.remove('active')); if (state.active >= 0) tr.classList.add('active'); draw(ref, Number($('lo').value), Number($('hi').value)); };
     tb.appendChild(tr);
   });
@@ -482,7 +592,7 @@ function draw(ref, lo, hi) {
 
   const leg = $('legend');
   leg.innerHTML = `<span><i style="background:#fff"></i>reference — ${label(state.ref.entry)}</span>` +
-    shown.map((s) => `<span><i style="background:${COLORS[state.results.indexOf(s) % COLORS.length]}"></i>${label(s.entry)} ${s.rmse.toFixed(2)}</span>`).join('');
+    shown.map((s) => `<span><i style="background:${COLORS[state.results.indexOf(s) % COLORS.length]}"></i>${s.group ? `${s.entry.model} median` : label(s.entry)} ${s.score.toFixed(2)}</span>`).join('');
 }
 
 function report() {
@@ -492,24 +602,42 @@ function report() {
   const [a, b] = bandIndices(lo, hi);
   const stamp = new Date().toISOString();
   const ref = state.ref;
+  const eqMode = state.mode === 'eq';
   const lines = [
     `PEQdB range match · ${isSquig() ? 'squig mode (community measurements)' : 'peqdb mode'}`,
     `generated   ${stamp}`,
     `reference   ${label(ref.entry)}  [${ref.entry.source}${ref.entry.cat !== '—' ? ` / ${ref.entry.cat}` : ''}]`,
     `band        ${Math.round(lo)}–${Math.round(hi)} Hz  (${b - a + 1} of ${N} grid points)`,
     `anchor      normalised to 0 dB at ${Math.round(anchorHz)} Hz`,
-    `metric      raw RMSE in dB over the band, no mean-offset removal; lower is better`,
-    `compared    ${(state.full?.length ?? 0).toLocaleString()} graphs`,
+    eqMode
+      ? 'metric      5-band EQ residual in dB (+3/−9 dB) over the band; lower is easier to EQ'
+      : 'metric      raw RMSE in dB over the band, no mean-offset removal; lower is better',
+    `compared    ${(state.full?.length ?? 0).toLocaleString()} measurements${state.group ? ` · grouped by model (median, min n=${state.minN}, ${state.results.length} shown)` : ''}`,
     '',
-    '  rank   rmse_db  mean_db  max_db   pts  model / variant [source]',
-    '  ----   -------  -------  ------   ---  ----------------------------',
+    eqMode
+      ? '  rank   eq_db  gain_db  peak_db  rough_db   pts  model / variant [source]'
+      : '  rank   rmse_db  mean_db  max_db  rough_db   pts  model / variant [source]',
+    eqMode
+      ? '  ----   -----  -------  -------  --------   ---  ----------------------------'
+      : '  ----   -------  -------  ------  --------   ---  ----------------------------',
   ];
   state.results.forEach((r, i) => {
-    const mean = `${r.meanDev >= 0 ? '+' : ''}${r.meanDev.toFixed(2)}`;
-    lines.push(
-      `${String(i + 1).padStart(6)}${r.rmse.toFixed(3).padStart(9)}${mean.padStart(8)}${r.maxDev.toFixed(1).padStart(7)}` +
-      `${String(r.points).padStart(6)}  ${label(r.entry)} [${r.entry.source}${r.entry.cat !== '—' ? ` / ${r.entry.cat}` : ''}]`
-    );
+    const tag = r.group ? ` (median of n=${r.group.count}, ${r.group.min.toFixed(2)}–${r.group.max.toFixed(2)})` : '';
+    const suffix = `${label(r.entry)}${tag} [${r.entry.source}${r.entry.cat !== '—' ? ` / ${r.entry.cat}` : ''}]`;
+    if (eqMode) {
+      const gain = r.eq ? `${r.eq.maxGain >= 0 ? '+' : ''}${r.eq.maxGain.toFixed(1)}` : '—';
+      const peak = r.eq ? r.eq.maxDev.toFixed(1) : '—';
+      lines.push(
+        `${String(i + 1).padStart(6)}${r.score.toFixed(3).padStart(8)}${gain.padStart(8)}${peak.padStart(8)}` +
+        `${r.rough.toFixed(2).padStart(10)}${String(r.points).padStart(6)}  ${suffix}`
+      );
+    } else {
+      const mean = `${r.meanDev >= 0 ? '+' : ''}${r.meanDev.toFixed(2)}`;
+      lines.push(
+        `${String(i + 1).padStart(6)}${r.rmse.toFixed(3).padStart(9)}${mean.padStart(8)}${r.maxDev.toFixed(1).padStart(7)}` +
+        `${r.rough.toFixed(2).padStart(10)}${String(r.points).padStart(6)}  ${suffix}`
+      );
+    }
   });
   lines.push('', 'Reference curve (Hz dB, 384 log-spaced points):');
   const refGrid = anchor(ref.grid, anchorHz);
@@ -523,6 +651,24 @@ document.addEventListener('click', (e) => { if (!e.target.closest('#matches, #q'
 $('cat').addEventListener('change', () => { if (state.ref?.kind === 'db') { state.refs[state.ds] = state.ref = null; $('picked').textContent = 'no reference selected'; $('picked').classList.add('empty'); } run(); });
 $('sCat').addEventListener('change', run);
 $('run').onclick = run;
+$('mode').addEventListener('change', () => {
+  state.mode = $('mode').value;
+  if (state.mode === 'eq' && Number($('lo').value) < 2000) {
+    $('lo').value = 2000;
+    $('hi').value = 20000;
+    $('loR').value = toSlider(2000);
+    $('hiR').value = toSlider(20000);
+  }
+  $('run').textContent = state.mode === 'eq' ? 'Find easiest' : 'Find closest';
+  $('hint').textContent = scoreHint();
+  run();
+});
+$('group').addEventListener('change', () => {
+  state.group = $('group').checked;
+  $('minNRow').style.display = state.group ? 'flex' : 'none';
+  run();
+});
+$('minN').addEventListener('change', () => { state.minN = Number($('minN').value); run(); });
 $('dl').onclick = () => download(`${isSquig() ? 'squig' : 'peqdb'}-range-match_${Math.round(Number($('lo').value))}-${Math.round(Number($('hi').value))}Hz.txt`, report());
 
 async function loadSquig() {
@@ -599,6 +745,7 @@ async function switchDs(ds) {
   $('count').textContent = '';
   $('status').textContent = '';
   $('legend').innerHTML = '';
+  renderHead();
   if (ds === 'peqdb') {
     if (!peqdbStore.loaded) { $('sub').textContent = 'loading catalogue…'; return; }
     peqdbView();
