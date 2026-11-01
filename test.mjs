@@ -83,6 +83,14 @@ for (let i = 1; i < vsDiamond.length; i++)
   if (vsDiamond[i].rmse < vsDiamond[i - 1].rmse) throw new Error('Diamond ranking not sorted');
 console.log(`Diamond default: ${vsDiamond.length} IE graphs scored, best ${vsDiamond[0].e.model} ${vsDiamond[0].e.variant} at ${vsDiamond[0].rmse.toFixed(3)} dB`);
 
+const flatRef = new Float32Array(N);
+const cand = anchor(curveOf(vsDiamond[0].e), 1000);
+const shifted = Float32Array.from(cand, (v, k) => v - diamondRef[k]);
+const plain = scoreBand(diamondRef, cand, 1000, 20000);
+const relative = scoreBand(flatRef, shifted, 1000, 20000);
+if (Math.abs(plain.rmse - relative.rmse) > 1e-6) throw new Error('Diamond-relative shift changed the score');
+console.log(`Diamond-relative invariance: ${plain.rmse.toFixed(3)} dB -> ${relative.rmse.toFixed(3)} dB`);
+
 const txt = ['20;0', '100;-2', '1000;0', '3000;4', '8000;-3', '20000;-9'].join('\n');
 const parsed = parseCurveText(txt);
 console.log(`\nparser: ${parsed.points} rows -> grid ${parsed.grid.length} pts, coverage ${parsed.coverage.join('–')} Hz`);

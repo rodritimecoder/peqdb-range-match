@@ -95,7 +95,7 @@
         <button id="tab-peqdb" class="tab on">peqdb</button>
         <button id="tab-squig" class="tab">squig</button>
       </div>
-      <button id="flat" class="flat">Flat target: off</button>
+      <button id="flat" class="flat">Flatten Diamond: off</button>
       <div id="peqdb-ref">
         <div class="row" style="margin-bottom:8px">
           <select id="cat" style="flex:0 0 88px"><option value="IE">IE</option><option value="OE">OE</option><option value="BOTH">both</option></select>
@@ -183,7 +183,7 @@ import { eqResidual, makeEqBank, roughness } from './eq.mjs';
 
 const $ = (id) => document.getElementById(id);
 const COLORS = ['#7cc4ff', '#6ee7a8', '#ffb86b', '#f78fb3', '#b39dff', '#4fd1c5', '#f6e05e'];
-const state = { ds: 'peqdb', refs: { peqdb: null, squig: null }, index: null, buf: null, catalog: [], meta: null, results: [], full: [], active: -1, ref: null, mode: 'rmse', group: false, minN: 2, flatPrev: { peqdb: null, squig: null }, flatWanted: false };
+const state = { ds: 'peqdb', refs: { peqdb: null, squig: null }, index: null, buf: null, catalog: [], meta: null, results: [], full: [], active: -1, ref: null, mode: 'rmse', group: false, minN: 2, flattenDiamond: false };
 const squigStore = { loaded: false, loading: null, sites: [], entries: [], targets: [], targetsLoading: null, meta: null, buf: null };
 const DEFAULT_TARGET = 'PEQdB Diamond';
 const FLAT_TARGET = { name: 'Flat Line', group: 'Baseline', kind: 'BOTH', grid: Array.from({ length: N }, (_, k) => ({ f: Number(FREQS[k].toFixed(2)), v: 0 })) };
@@ -196,59 +196,36 @@ function label(entry) {
 function isSquig() { return state.ds === 'squig'; }
 
 function scoreHint() {
-  return state.mode === 'eq'
+  const base = state.mode === 'eq'
     ? 'Score = residual after 5 broad EQ bands (+3/−9 dB) over the band. Lower is easier to EQ.'
     : 'Score = raw RMSE in dB across the band. No mean-offset removal, so a level difference counts against the candidate.';
+  return state.flattenDiamond ? `${base} Curves are relative to PEQdB Diamond.` : base;
 }
 
 function ensureFlatTarget() {
   if (!squigStore.targets.some((t) => t.name === 'Flat Line')) squigStore.targets.push(FLAT_TARGET);
 }
 
-function flatTarget() {
-  ensureFlatTarget();
-  return squigStore.targets.find((t) => t.name === 'Flat Line');
+function diamondGrid(anchorHz) {
+  const target = squigStore.targets.find((t) => t.name === 'PEQdB Diamond');
+  if (!target) return null;
+  const grid = parseCurveText(target.grid.map((row) => `${row.f} ${row.v}`).join('\n')).grid;
+  return anchor(grid, anchorHz);
 }
 
-function isFlat() {
-  return state.ref?.kind === 'target' && state.ref.entry.model === 'Flat Line';
+function syncFlattenButton() {
+  const hasDiamond = squigStore.targets.some((t) => t.name === 'PEQdB Diamond');
+  if (!hasDiamond) state.flattenDiamond = false;
+  $('flat').disabled = !hasDiamond;
+  $('flat').classList.toggle('on', state.flattenDiamond);
+  $('flat').textContent = state.flattenDiamond ? 'Flatten Diamond: on' : 'Flatten Diamond: off';
 }
 
-function syncFlatButton() {
-  const on = isFlat();
-  $('flat').classList.toggle('on', on);
-  $('flat').textContent = on ? 'Flat target: on' : 'Flat target: off';
-}
-
-function toggleFlat() {
-  const ds = state.ds;
-  if (isFlat()) {
-    const prev = state.flatPrev[ds];
-    state.flatPrev[ds] = null;
-    if (prev) {
-      state.refs[ds] = state.ref = prev;
-      $('picked').textContent = prev.entry.display ?? `${label(prev.entry)} — ${prev.entry.source} (${prev.entry.cat})`;
-      $('picked').classList.remove('empty');
-      $('hint').textContent = scoreHint();
-      if (ds === 'squig') syncTargetSelect(prev.entry.model);
-      run();
-    } else {
-      state.refs[ds] = state.ref = null;
-      $('picked').textContent = 'no reference selected';
-      $('picked').classList.add('empty');
-      state.results = [];
-      state.full = [];
-      state.active = -1;
-      $('rows').innerHTML = '';
-      $('count').textContent = '';
-      $('status').textContent = '';
-      $('legend').innerHTML = '';
-    }
-  } else {
-    const flat = flatTarget();
-    if (flat) pickTarget(flat, ds);
-  }
-  syncFlatButton();
+function toggleFlatten() {
+  state.flattenDiamond = !state.flattenDiamond;
+  syncFlattenButton();
+  $('hint').textContent = scoreHint();
+  run();
 }
 
 function syncTargetSelect(name) {
@@ -301,14 +278,11 @@ async function boot() {
   window.__dbg = { state, levelAt, report };
   await loadTargets();
   await applyParams();
+  syncFlattenButton();
   renderHead();
   const p = new URLSearchParams(location.search);
   if (p.get('ds') === 'squig') await switchDs('squig');
   else if (!state.refs.peqdb) await applyTargetDefault('peqdb');
-  if (state.flatWanted) {
-    state.flatWanted = false;
-    if (!isFlat()) toggleFlat();
-  }
 }
 
 async function applyParams() {
@@ -325,7 +299,7 @@ async function applyParams() {
   if (p.get('mode') === 'eq') $('mode').value = 'eq';
   if (p.get('group') === '1') { $('group').checked = true; state.group = true; }
   if (p.get('minn')) $('minN').value = p.get('minn');
-  state.flatWanted = p.get('flat') === '1';
+  state.flattenDiamond = p.get('flat') === '1';
   state.minN = Number($('minN').value);
   $('minNRow').style.display = state.group ? 'flex' : 'none';
   state.mode = $('mode').value;
@@ -403,7 +377,6 @@ function search(q) {
 }
 
 function pick(entry) {
-  state.flatPrev[state.ds] = null;
   state.refs[state.ds] = state.ref = { kind: 'db', entry, grid: entryCurve(entry) };
   const p = $('picked');
   p.classList.remove('empty');
@@ -411,7 +384,6 @@ function pick(entry) {
   $('matches').style.display = 'none';
   $('q').value = '';
   $('hint').textContent = scoreHint();
-  syncFlatButton();
   run();
 }
 
@@ -431,8 +403,6 @@ function pickTarget(target, ds = 'squig') {
       ? 'Flat Line — 0 dB baseline (both)'
       : `${target.name} — PEQdB ${target.group === target.name ? 'target' : target.group} (${target.kind})`,
   };
-  if (flat && !isFlat()) state.flatPrev[ds] = state.refs[ds];
-  else if (!flat) state.flatPrev[ds] = null;
   state.refs[ds] = state.ref = { kind: 'target', entry, grid: parsed.grid };
   const p = $('picked');
   p.classList.remove('empty');
@@ -448,7 +418,6 @@ function pickTarget(target, ds = 'squig') {
       ? `Reference is a flat 0 dB line (PEQdB Baseline). ${scoreHint()}`
       : `Reference is the ${target.name} target. ${scoreHint()}`;
   }
-  syncFlatButton();
   run();
 }
 
@@ -472,7 +441,6 @@ function pickFile(file) {
   reader.onload = () => {
     try {
       const parsed = parseCurveText(String(reader.result));
-      state.flatPrev[state.ds] = null;
       state.refs[state.ds] = state.ref = { kind: 'file', entry: { model: file.name.replace(/\.[^.]+$/, ''), variant: '', source: 'local file', cat: '—', start: -1, count: 1 }, grid: parsed.grid, coverage: parsed.coverage };
       const p = $('picked');
       p.classList.remove('empty');
@@ -480,7 +448,6 @@ function pickFile(file) {
       $('hint').textContent = parsed.coverage[1] < Number($('hi').value)
         ? `⚠ your file stops at ${Math.round(parsed.coverage[1])} Hz; the grid is flat above that, so the top of the band is not real data`
         : scoreHint();
-      syncFlatButton();
       run();
     } catch (err) {
       $('hint').textContent = `⚠ ${err.message}`;
@@ -498,7 +465,9 @@ async function run() {
   if (!(hi > lo)) { $('status').textContent = 'band end must exceed start'; return; }
 
   const cat = isSquig() ? $('sCat').value : $('cat').value;
+  const diamond = state.flattenDiamond ? diamondGrid(anchorHz) : null;
   const ref = anchor(state.ref.grid, anchorHz);
+  if (diamond) for (let k = 0; k < N; k++) ref[k] -= diamond[k];
   const skip = isSquig() ? null : state.ref.entry.start;
   const skipModel = state.ref.entry.model;
   const [a, b] = bandIndices(lo, hi);
@@ -516,6 +485,7 @@ async function run() {
     if (/^_EQ|sandbox/i.test(e.model)) continue;
     if (!isSquig() && e.kind !== 'file' && e.start === skip && e.model === skipModel) continue;
     const curve = anchor(entryCurve(e), anchorHz);
+    if (diamond) for (let k = 0; k < N; k++) curve[k] -= diamond[k];
     const s = scoreBand(ref, curve, lo, hi);
     if (!Number.isFinite(s.rmse)) continue;
     const dev = new Float64Array(N);
@@ -530,7 +500,7 @@ async function run() {
   state.active = -1;
 
   const dt = performance.now() - t0;
-  $('status').textContent = `${b - a + 1} pts · ${cands.length.toLocaleString()} compared · ${dt.toFixed(0)} ms${eqMode ? ' · 5-band +3/−9 dB' : ''}`;
+  $('status').textContent = `${b - a + 1} pts · ${cands.length.toLocaleString()} compared · ${dt.toFixed(0)} ms${eqMode ? ' · 5-band +3/−9 dB' : ''}${state.flattenDiamond ? ' · Diamond-relative' : ''}`;
   $('count').textContent = state.group
     ? `${state.results.length} models of ${grouped.length.toLocaleString()}`
     : `${state.results.length} shown of ${cands.length.toLocaleString()}`;
@@ -681,7 +651,7 @@ function draw(ref, lo, hi) {
   for (const db of yTicks) ctx.fillText(`${db}`, pad.l - 8, Y(db));
 
   const leg = $('legend');
-  leg.innerHTML = `<span><i style="background:#fff"></i>reference — ${label(state.ref.entry)}</span>` +
+  leg.innerHTML = `<span><i style="background:#fff"></i>reference — ${label(state.ref.entry)}${state.flattenDiamond ? ' (Diamond-relative)' : ''}</span>` +
     shown.map((s) => `<span><i style="background:${COLORS[state.results.indexOf(s) % COLORS.length]}"></i>${s.group ? `${s.entry.model} median` : label(s.entry)} ${s.score.toFixed(2)}</span>`).join('');
 }
 
@@ -696,9 +666,10 @@ function report() {
   const lines = [
     `PEQdB range match · ${isSquig() ? 'squig mode (community measurements)' : 'peqdb mode'}`,
     `generated   ${stamp}`,
-    `reference   ${label(ref.entry)}  [${ref.entry.source}${ref.entry.cat !== '—' ? ` / ${ref.entry.cat}` : ''}]`,
+    `reference   ${label(ref.entry)}${state.flattenDiamond ? '  [Diamond-relative]' : ''}  [${ref.entry.source}${ref.entry.cat !== '—' ? ` / ${ref.entry.cat}` : ''}]`,
     `band        ${Math.round(lo)}–${Math.round(hi)} Hz  (${b - a + 1} of ${N} grid points)`,
     `anchor      normalised to 0 dB at ${Math.round(anchorHz)} Hz`,
+    ...(state.flattenDiamond ? ['view        Diamond-relative (every curve minus the PEQdB Diamond target)'] : []),
     eqMode
       ? 'metric      5-band EQ residual in dB (+3/−9 dB) over the band; lower is easier to EQ'
       : 'metric      raw RMSE in dB over the band, no mean-offset removal; lower is better',
@@ -729,8 +700,12 @@ function report() {
       );
     }
   });
-  lines.push('', 'Reference curve (Hz dB, 384 log-spaced points):');
+  lines.push('', `Reference curve (Hz dB${state.flattenDiamond ? ', Diamond-relative' : ''}, 384 log-spaced points):`);
   const refGrid = anchor(ref.grid, anchorHz);
+  if (state.flattenDiamond) {
+    const d = diamondGrid(anchorHz);
+    if (d) for (let k = 0; k < N; k++) refGrid[k] -= d[k];
+  }
   for (let k = 0; k < N; k++) lines.push(`${FREQS[k].toFixed(2)} ${refGrid[k].toFixed(3)}`);
   return lines.join('\n');
 }
@@ -810,7 +785,6 @@ function applySquigView() {
     state.ref = savedRef;
     $('picked').textContent = savedRef.entry.display ?? `${savedRef.entry.model} — PEQdB target`;
     $('picked').classList.remove('empty');
-    syncFlatButton();
     run();
     return;
   }
@@ -820,7 +794,7 @@ function applySquigView() {
     : preferred ?? squigStore.targets[0]?.name ?? '';
   const chosen = squigStore.targets.find((t) => t.name === sel.value);
   if (chosen) pickTarget(chosen);
-  else { state.refs.squig = state.ref = null; $('picked').textContent = 'no target selected'; $('picked').classList.add('empty'); syncFlatButton(); }
+  else { state.refs.squig = state.ref = null; $('picked').textContent = 'no target selected'; $('picked').classList.add('empty'); }
 }
 
 async function switchDs(ds) {
@@ -847,7 +821,6 @@ async function switchDs(ds) {
     if (saved) {
       $('picked').textContent = saved.entry.display ?? `${label(saved.entry)} — ${saved.entry.source} (${saved.entry.cat})`;
       $('picked').classList.remove('empty');
-      syncFlatButton();
       run();
     } else {
       await applyTargetDefault('peqdb');
@@ -862,7 +835,6 @@ async function switchDs(ds) {
     } catch (err) {
       $('sub').textContent = `squig cache unavailable — ${err.message}`;
       $('picked').textContent = `squig cache not built — run: node build-squig.mjs`;
-      syncFlatButton();
       return;
     }
     $('run').disabled = false;
@@ -895,7 +867,7 @@ function switchSquigIntoView() {
 
 $('tab-peqdb').onclick = () => switchDs('peqdb');
 $('tab-squig').onclick = () => switchDs('squig');
-$('flat').onclick = toggleFlat;
+$('flat').onclick = toggleFlatten;
 $('targetSel').addEventListener('change', () => {
   const chosen = squigStore.targets.find((t) => t.name === $('targetSel').value);
   if (chosen) pickTarget(chosen);

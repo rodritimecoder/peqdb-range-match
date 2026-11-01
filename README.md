@@ -105,10 +105,13 @@ target curves squig mode uses are searchable in the peqdb box: type `diamond`
 and the target appears above the measured graphs, or pass `?ref=peqdb diamond`.
 A catalogue hit still wins when `?ref=` matches a real measurement.
 
-The **Flat target** button swaps the reference for PEQdB's Baseline → Flat Line
-(0 dB at every frequency), so you rank deviation from neutral instead of
-deviation from Diamond. It works in both tabs, restores the previous reference
-when toggled off, and is deep-linkable as `?flat=1`.
+The **Flatten Diamond** button re-bases the view on the PEQdB Diamond target:
+Diamond becomes 0 dB and every other target and candidate is shown as its
+deviation from Diamond. The match scores are unchanged — subtracting the same
+curve from both sides cancels — but the graph and the target comparison become
+Diamond-relative. It works in both tabs and is deep-linkable as `?flat=1`. The
+PEQdB `Baseline → Flat Line` target is still available in the target dropdown
+for a plain 0 dB reference.
 
 ## Squig mode
 
@@ -188,7 +191,7 @@ http://127.0.0.1:7319/?ref=moondrop%20variations&lo=1000&hi=20000&cat=IE&top=50&
 `ref` is matched by word against model and variant, then against the target
 names; the first catalogue hit wins. Add `mode=eq` for the Treble EQ score,
 `group=1` to collapse by model, `minn=2` for the minimum measurement count, and
-`flat=1` to start against the flat line.
+`flat=1` to start in the Diamond-relative view.
 
 ## Test
 
@@ -198,8 +201,8 @@ node test.mjs
 ```
 
 The suite covers decode/normalise/band maths, raw RMSE, the 5-band EQ fit
-(broad bump, comb, narrow spike), roughness, the Diamond default, and the squig
-record/phone-book encoders.
+(broad bump, comb, narrow spike), roughness, the Diamond default and its
+relative view, and the squig record/phone-book encoders.
 
 ## Data and attribution
 
