@@ -1,0 +1,21 @@
+{
+  "name": "peqdb-range-match",
+  "version": "1.0.0",
+  "description": "Closest-graph search over a user-chosen frequency band, on the data behind peqdb.com/studio",
+  "type": "module",
+  "license": "MIT",
+  "author": "rodritimecoder",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rodritimecoder/peqdb-range-match.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node test.mjs",
+    "build:squig": "node build-squig.mjs",
+    "rank:squig": "node rank-squig.mjs"
+  }
+}
