@@ -10,7 +10,7 @@ const SQUIG = join(DATA, 'squig');
 const CACHE = join(SQUIG, 'cache');
 const PROBES = join(SQUIG, 'probes.json');
 const RECORD_BYTES = 776;
-const UA = 'peqdb-range-match-builder/1.0 (+https://github.com/rodritimecoder/my-agent-skills)';
+const UA = 'peqdb-range-match-builder/1.0 (+https://github.com/rodritimecoder/peqdb-range-match)';
 const DATA_DIRS = ['data/', 'data/phones/', 'data/measurements/', 'data/iems/', 'data/headphones/', 'data/earbuds/'];
 
 const args = process.argv.slice(2);

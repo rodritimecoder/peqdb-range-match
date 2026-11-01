@@ -12,7 +12,7 @@ const TIMEOUT = Number(process.env.TIMEOUT_MS ?? 8000);
 const CONCURRENCY = Number(process.env.CONCURRENCY ?? 8);
 const PROBES_PER_DB = 4;
 const DB_LIMIT = Number(process.env.LIMIT ?? 0);
-const UA = 'peqdb-range-match-speedtest/1.0 (+https://github.com/rodritimecoder/my-agent-skills)';
+const UA = 'peqdb-range-match-speedtest/1.0 (+https://github.com/rodritimecoder/peqdb-range-match)';
 
 const sites = JSON.parse(await readFile(join(CACHE, 'squigsites.json'), 'utf8'));
 const probes = JSON.parse(await readFile(join(SQUIG, 'probes.json'), 'utf8')).dbs;
