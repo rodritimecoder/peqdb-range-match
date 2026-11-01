@@ -66,6 +66,11 @@ const targetsRaw = await readFile(new URL('./data/targets.json', import.meta.url
 const targets = JSON.parse(targetsRaw);
 const diamond = targets.targets.find((t) => t.name === 'PEQdB Diamond');
 if (!diamond) throw new Error('PEQdB Diamond target missing — the peqdb default reference would fall back');
+const flatLine = targets.targets.find((t) => t.name === 'Flat Line');
+if (!flatLine || flatLine.grid.length !== N) throw new Error('Flat Line target missing');
+const flatGrid = anchor(parseCurveText(flatLine.grid.map((row) => `${row.f} ${row.v}`).join('\n')).grid, 1000);
+if (flatGrid.some((v) => Math.abs(v) > 1e-6)) throw new Error('Flat Line is not flat');
+console.log(`Flat Line target: ${flatLine.grid.length} points, max |dB| ${Math.max(...flatGrid.map(Math.abs)).toFixed(6)}`);
 const diamondText = diamond.grid.map((row) => `${row.f} ${row.v}`).join('\n');
 const diamondRef = anchor(parseCurveText(diamondText).grid, 1000);
 const vsDiamond = catalog
@@ -135,4 +140,4 @@ for (const { phone, want } of stemCases) {
 }
 console.log(`phoneStems: ${stemCases.length} schema shapes expanded correctly`);
 
-console.log('\nOK — decode, normalise, band, scoring, EQ fit, sorting, parser, Diamond default, squig encoding and phone-book variants all verified');
+console.log('\nOK — decode, normalise, band, scoring, EQ fit, sorting, parser, Diamond default, Flat Line, squig encoding and phone-book variants all verified');

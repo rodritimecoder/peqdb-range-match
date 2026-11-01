@@ -11,8 +11,8 @@ Two modes:
 
 - **peqdb** — score the 26,149-graph PEQdB catalogue against a reference you
   pick, or against the **PEQdB Diamond** target it opens with.
-- **squig** — score community squig.link measurements against any of the 15
-  PEQdB target curves.
+- **squig** — score community squig.link measurements against any of the 16
+  PEQdB targets, including the Flat Line baseline.
 
 Everything runs locally: no account, no API key, no telemetry.
 
@@ -29,8 +29,8 @@ node server.mjs
 Open <http://127.0.0.1:7319>.
 
 First start downloads `graph-data.bin` (20.3 MB, 26,149 graphs) from peqdb.com,
-extracts the 15 target curves into `data/targets.json`, and caches both. Later
-starts are offline. `data/` is gitignored; nothing is bundled.
+extracts the 16 target curves (15 preferences plus a Flat Line baseline) into
+`data/targets.json`, and caches both. Later starts are offline. `data/` is gitignored; nothing is bundled.
 
 ## Platforms
 
@@ -105,6 +105,11 @@ target curves squig mode uses are searchable in the peqdb box: type `diamond`
 and the target appears above the measured graphs, or pass `?ref=peqdb diamond`.
 A catalogue hit still wins when `?ref=` matches a real measurement.
 
+The **Flat target** button swaps the reference for PEQdB's Baseline → Flat Line
+(0 dB at every frequency), so you rank deviation from neutral instead of
+deviation from Diamond. It works in both tabs, restores the previous reference
+when toggled off, and is deep-linkable as `?flat=1`.
+
 ## Squig mode
 
 The **squig** tab runs the same band-match against the community measurement
@@ -118,7 +123,7 @@ node build-squig.mjs --concurrency 24 --samples 3            # all 143 databases
 
 - **Query curve** is a PEQdB target, extracted from the studio app bundle
   (`PEQdB Diamond`, `PEQdB Diamond β`, Harman IE 2019, the HiFiEndgame family
-  and more — 15 targets in total).
+  and more — 16 targets in total, including the Flat Line baseline).
 - **Candidates** are every community squig measurement: one index per
   reviewer site (`squigsites.json` → `<site>/<folder>/data/phone_book.json`
   → `<file> L.txt` / `R.txt`, plain TSV). Three schema quirks are handled:
@@ -182,7 +187,8 @@ http://127.0.0.1:7319/?ref=moondrop%20variations&lo=1000&hi=20000&cat=IE&top=50&
 
 `ref` is matched by word against model and variant, then against the target
 names; the first catalogue hit wins. Add `mode=eq` for the Treble EQ score,
-`group=1` to collapse by model, and `minn=2` for the minimum measurement count.
+`group=1` to collapse by model, `minn=2` for the minimum measurement count, and
+`flat=1` to start against the flat line.
 
 ## Test
 

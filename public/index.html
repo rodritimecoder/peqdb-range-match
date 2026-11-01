@@ -79,6 +79,8 @@
   .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
   .tab { padding: 5px 12px; font-size: 11.5px; font-family: var(--mono); }
   .tab.on { background: #1d3a52; border-color: #2b5580; font-weight: 600; }
+  button.flat { width: 100%; margin-bottom: 10px; font-family: var(--mono); font-size: 12px; }
+  button.flat.on { background: #1d3a52; border-color: #2b5580; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -93,6 +95,7 @@
         <button id="tab-peqdb" class="tab on">peqdb</button>
         <button id="tab-squig" class="tab">squig</button>
       </div>
+      <button id="flat" class="flat">Flat target: off</button>
       <div id="peqdb-ref">
         <div class="row" style="margin-bottom:8px">
           <select id="cat" style="flex:0 0 88px"><option value="IE">IE</option><option value="OE">OE</option><option value="BOTH">both</option></select>
@@ -180,9 +183,10 @@ import { eqResidual, makeEqBank, roughness } from './eq.mjs';
 
 const $ = (id) => document.getElementById(id);
 const COLORS = ['#7cc4ff', '#6ee7a8', '#ffb86b', '#f78fb3', '#b39dff', '#4fd1c5', '#f6e05e'];
-const state = { ds: 'peqdb', refs: { peqdb: null, squig: null }, index: null, buf: null, catalog: [], meta: null, results: [], full: [], active: -1, ref: null, mode: 'rmse', group: false, minN: 2 };
+const state = { ds: 'peqdb', refs: { peqdb: null, squig: null }, index: null, buf: null, catalog: [], meta: null, results: [], full: [], active: -1, ref: null, mode: 'rmse', group: false, minN: 2, flatPrev: { peqdb: null, squig: null }, flatWanted: false };
 const squigStore = { loaded: false, loading: null, sites: [], entries: [], targets: [], targetsLoading: null, meta: null, buf: null };
 const DEFAULT_TARGET = 'PEQdB Diamond';
+const FLAT_TARGET = { name: 'Flat Line', group: 'Baseline', kind: 'BOTH', grid: Array.from({ length: N }, (_, k) => ({ f: Number(FREQS[k].toFixed(2)), v: 0 })) };
 
 function label(entry) {
   const v = entry.variant && entry.variant !== '()' ? ` ${entry.variant}` : '';
@@ -195,6 +199,61 @@ function scoreHint() {
   return state.mode === 'eq'
     ? 'Score = residual after 5 broad EQ bands (+3/−9 dB) over the band. Lower is easier to EQ.'
     : 'Score = raw RMSE in dB across the band. No mean-offset removal, so a level difference counts against the candidate.';
+}
+
+function ensureFlatTarget() {
+  if (!squigStore.targets.some((t) => t.name === 'Flat Line')) squigStore.targets.push(FLAT_TARGET);
+}
+
+function flatTarget() {
+  ensureFlatTarget();
+  return squigStore.targets.find((t) => t.name === 'Flat Line');
+}
+
+function isFlat() {
+  return state.ref?.kind === 'target' && state.ref.entry.model === 'Flat Line';
+}
+
+function syncFlatButton() {
+  const on = isFlat();
+  $('flat').classList.toggle('on', on);
+  $('flat').textContent = on ? 'Flat target: on' : 'Flat target: off';
+}
+
+function toggleFlat() {
+  const ds = state.ds;
+  if (isFlat()) {
+    const prev = state.flatPrev[ds];
+    state.flatPrev[ds] = null;
+    if (prev) {
+      state.refs[ds] = state.ref = prev;
+      $('picked').textContent = prev.entry.display ?? `${label(prev.entry)} — ${prev.entry.source} (${prev.entry.cat})`;
+      $('picked').classList.remove('empty');
+      $('hint').textContent = scoreHint();
+      if (ds === 'squig') syncTargetSelect(prev.entry.model);
+      run();
+    } else {
+      state.refs[ds] = state.ref = null;
+      $('picked').textContent = 'no reference selected';
+      $('picked').classList.add('empty');
+      state.results = [];
+      state.full = [];
+      state.active = -1;
+      $('rows').innerHTML = '';
+      $('count').textContent = '';
+      $('status').textContent = '';
+      $('legend').innerHTML = '';
+    }
+  } else {
+    const flat = flatTarget();
+    if (flat) pickTarget(flat, ds);
+  }
+  syncFlatButton();
+}
+
+function syncTargetSelect(name) {
+  const sel = $('targetSel');
+  if ([...sel.options].some((o) => o.value === name)) sel.value = name;
 }
 
 const toSlider = (hz) => Math.round(1000 * Math.log(hz / F_MIN) / Math.log(F_MAX / F_MIN));
@@ -217,8 +276,8 @@ async function loadTargets() {
   if (squigStore.targets.length) return squigStore.targets;
   squigStore.targetsLoading ??= fetch('/api/targets')
     .then((r) => (r.ok ? r.json() : { targets: [] }))
-    .then((body) => (squigStore.targets = body.targets ?? []))
-    .catch(() => (squigStore.targets = []));
+    .then((body) => { squigStore.targets = body.targets ?? []; ensureFlatTarget(); return squigStore.targets; })
+    .catch(() => { squigStore.targets = []; ensureFlatTarget(); return squigStore.targets; });
   return squigStore.targetsLoading;
 }
 
@@ -244,8 +303,12 @@ async function boot() {
   await applyParams();
   renderHead();
   const p = new URLSearchParams(location.search);
-  if (p.get('ds') === 'squig') switchDs('squig');
+  if (p.get('ds') === 'squig') await switchDs('squig');
   else if (!state.refs.peqdb) await applyTargetDefault('peqdb');
+  if (state.flatWanted) {
+    state.flatWanted = false;
+    if (!isFlat()) toggleFlat();
+  }
 }
 
 async function applyParams() {
@@ -262,6 +325,7 @@ async function applyParams() {
   if (p.get('mode') === 'eq') $('mode').value = 'eq';
   if (p.get('group') === '1') { $('group').checked = true; state.group = true; }
   if (p.get('minn')) $('minN').value = p.get('minn');
+  state.flatWanted = p.get('flat') === '1';
   state.minN = Number($('minN').value);
   $('minNRow').style.display = state.group ? 'flex' : 'none';
   state.mode = $('mode').value;
@@ -339,6 +403,7 @@ function search(q) {
 }
 
 function pick(entry) {
+  state.flatPrev[state.ds] = null;
   state.refs[state.ds] = state.ref = { kind: 'db', entry, grid: entryCurve(entry) };
   const p = $('picked');
   p.classList.remove('empty');
@@ -346,29 +411,52 @@ function pick(entry) {
   $('matches').style.display = 'none';
   $('q').value = '';
   $('hint').textContent = scoreHint();
+  syncFlatButton();
   run();
 }
 
 function pickTarget(target, ds = 'squig') {
   const text = target.grid.map((row) => `${row.f} ${row.v}`).join('\n');
   const parsed = parseCurveText(text);
-  const entry = { model: target.name, variant: '', source: `PEQdB target · ${target.group}`, cat: target.kind, start: -1, count: 1, ds: 'target' };
+  const flat = target.name === 'Flat Line';
+  const entry = {
+    model: target.name,
+    variant: '',
+    source: `PEQdB target · ${target.group}`,
+    cat: target.kind,
+    start: -1,
+    count: 1,
+    ds: 'target',
+    display: flat
+      ? 'Flat Line — 0 dB baseline (both)'
+      : `${target.name} — PEQdB ${target.group === target.name ? 'target' : target.group} (${target.kind})`,
+  };
+  if (flat && !isFlat()) state.flatPrev[ds] = state.refs[ds];
+  else if (!flat) state.flatPrev[ds] = null;
   state.refs[ds] = state.ref = { kind: 'target', entry, grid: parsed.grid };
   const p = $('picked');
   p.classList.remove('empty');
-  p.textContent = `${target.name} — PEQdB ${target.group === target.name ? 'target' : target.group} (${target.kind})`;
+  p.textContent = entry.display;
   if (ds === 'squig') {
-    $('hint').textContent = `Candidates are community squig measurements (L/R averaged). ${scoreHint()}`;
+    $('hint').textContent = flat
+      ? `Candidates are community squig measurements (L/R averaged). Reference is a flat 0 dB line (PEQdB Baseline). ${scoreHint()}`
+      : `Candidates are community squig measurements (L/R averaged). ${scoreHint()}`;
     if (!['IE', 'OE', 'BOTH'].includes($('sCat').value) || target.kind === 'OE') $('sCat').value = target.kind;
+    syncTargetSelect(target.name);
   } else {
-    $('hint').textContent = `Reference is the ${target.name} target. ${scoreHint()}`;
+    $('hint').textContent = flat
+      ? `Reference is a flat 0 dB line (PEQdB Baseline). ${scoreHint()}`
+      : `Reference is the ${target.name} target. ${scoreHint()}`;
   }
+  syncFlatButton();
   run();
 }
 
 async function applyTargetDefault(ds) {
   const targets = await loadTargets();
-  const target = targets.find((t) => t.name === DEFAULT_TARGET) ?? targets[0];
+  const target = targets.find((t) => t.name === DEFAULT_TARGET)
+    ?? targets.find((t) => t.name !== 'Flat Line')
+    ?? targets[0];
   if (!target) {
     state.refs[ds] = state.ref = null;
     $('picked').textContent = 'no reference selected';
@@ -384,6 +472,7 @@ function pickFile(file) {
   reader.onload = () => {
     try {
       const parsed = parseCurveText(String(reader.result));
+      state.flatPrev[state.ds] = null;
       state.refs[state.ds] = state.ref = { kind: 'file', entry: { model: file.name.replace(/\.[^.]+$/, ''), variant: '', source: 'local file', cat: '—', start: -1, count: 1 }, grid: parsed.grid, coverage: parsed.coverage };
       const p = $('picked');
       p.classList.remove('empty');
@@ -391,6 +480,7 @@ function pickFile(file) {
       $('hint').textContent = parsed.coverage[1] < Number($('hi').value)
         ? `⚠ your file stops at ${Math.round(parsed.coverage[1])} Hz; the grid is flat above that, so the top of the band is not real data`
         : scoreHint();
+      syncFlatButton();
       run();
     } catch (err) {
       $('hint').textContent = `⚠ ${err.message}`;
@@ -689,6 +779,7 @@ async function loadSquig() {
     }),
   ]).then(([targetsBody, catalog, meta, buf]) => {
     squigStore.targets = targetsBody.targets ?? [];
+    ensureFlatTarget();
     squigStore.sites = catalog.sites;
     squigStore.entries = catalog.entries;
     squigStore.meta = meta;
@@ -705,20 +796,21 @@ function applySquigView() {
   const meta = squigStore.meta;
   $('sub').textContent = `squig · ${squigStore.entries.length.toLocaleString()} squigs · ${squigStore.sites.length} sites · ${(meta.bytes / 1e6).toFixed(1)} MB · built ${meta.built.slice(0, 10)} · ${(meta.misses?.count ?? 0).toLocaleString()} missed files · 384 log points`;
   const sel = $('targetSel');
-  if (!sel.options.length) {
-    squigStore.targets.forEach((t) => {
-      const opt = document.createElement('option');
-      opt.value = t.name;
-      opt.textContent = `${t.group} · ${t.name}`;
-      sel.appendChild(opt);
-    });
-  }
+  ensureFlatTarget();
+  sel.innerHTML = '';
+  squigStore.targets.forEach((t) => {
+    const opt = document.createElement('option');
+    opt.value = t.name;
+    opt.textContent = `${t.group} · ${t.name}`;
+    sel.appendChild(opt);
+  });
   const savedRef = state.refs.squig;
   if (savedRef) {
     sel.value = savedRef.entry.model;
     state.ref = savedRef;
-    $('picked').textContent = `${savedRef.entry.model} — PEQdB target`;
+    $('picked').textContent = savedRef.entry.display ?? `${savedRef.entry.model} — PEQdB target`;
     $('picked').classList.remove('empty');
+    syncFlatButton();
     run();
     return;
   }
@@ -728,7 +820,7 @@ function applySquigView() {
     : preferred ?? squigStore.targets[0]?.name ?? '';
   const chosen = squigStore.targets.find((t) => t.name === sel.value);
   if (chosen) pickTarget(chosen);
-  else { state.refs.squig = state.ref = null; $('picked').textContent = 'no target selected'; $('picked').classList.add('empty'); }
+  else { state.refs.squig = state.ref = null; $('picked').textContent = 'no target selected'; $('picked').classList.add('empty'); syncFlatButton(); }
 }
 
 async function switchDs(ds) {
@@ -753,8 +845,9 @@ async function switchDs(ds) {
     const saved = state.refs.peqdb;
     state.ref = saved;
     if (saved) {
-      $('picked').textContent = `${label(saved.entry)} — ${saved.entry.source} (${saved.entry.cat})`;
+      $('picked').textContent = saved.entry.display ?? `${label(saved.entry)} — ${saved.entry.source} (${saved.entry.cat})`;
       $('picked').classList.remove('empty');
+      syncFlatButton();
       run();
     } else {
       await applyTargetDefault('peqdb');
@@ -769,6 +862,7 @@ async function switchDs(ds) {
     } catch (err) {
       $('sub').textContent = `squig cache unavailable — ${err.message}`;
       $('picked').textContent = `squig cache not built — run: node build-squig.mjs`;
+      syncFlatButton();
       return;
     }
     $('run').disabled = false;
@@ -801,6 +895,7 @@ function switchSquigIntoView() {
 
 $('tab-peqdb').onclick = () => switchDs('peqdb');
 $('tab-squig').onclick = () => switchDs('squig');
+$('flat').onclick = toggleFlat;
 $('targetSel').addEventListener('change', () => {
   const chosen = squigStore.targets.find((t) => t.name === $('targetSel').value);
   if (chosen) pickTarget(chosen);

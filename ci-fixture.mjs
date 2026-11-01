@@ -35,8 +35,14 @@ await writeFile(
         kind: 'IE',
         grid: Array.from(FREQS, (f, k) => ({ f: Number(f.toFixed(2)), v: Number((Math.sin(k / 19) * 5).toFixed(3)) })),
       },
+      {
+        group: 'Baseline',
+        name: 'Flat Line',
+        kind: 'BOTH',
+        grid: Array.from(FREQS, (f) => ({ f: Number(f.toFixed(2)), v: 0 })),
+      },
     ],
   }, null, 2)
 );
 
-console.log(`fixture: ${records.length} graphs, 1 target, ${bin.length} bytes`);
+console.log(`fixture: ${records.length} graphs, 2 targets, ${bin.length} bytes`);
