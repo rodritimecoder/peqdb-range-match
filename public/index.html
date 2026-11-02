@@ -465,6 +465,8 @@ async function run() {
   if (!(hi > lo)) { $('status').textContent = 'band end must exceed start'; return; }
 
   const cat = isSquig() ? $('sCat').value : $('cat').value;
+  const active = state.active >= 0 ? state.results[state.active] : null;
+  const keep = active ? rowKey(active) : null;
   const diamond = state.flattenDiamond ? diamondGrid(anchorHz) : null;
   const ref = anchor(state.ref.grid, anchorHz);
   if (diamond) for (let k = 0; k < N; k++) ref[k] -= diamond[k];
@@ -497,7 +499,7 @@ async function run() {
   const grouped = state.group ? groupModels(cands) : cands;
   state.full = cands;
   state.results = grouped.slice(0, top);
-  state.active = -1;
+  state.active = keep ? state.results.findIndex((r) => rowKey(r) === keep) : -1;
 
   const dt = performance.now() - t0;
   $('status').textContent = `${b - a + 1} pts · ${cands.length.toLocaleString()} compared · ${dt.toFixed(0)} ms${eqMode ? ' · 5-band +3/−9 dB' : ''}${state.flattenDiamond ? ' · Diamond-relative' : ''}`;
@@ -509,6 +511,10 @@ async function run() {
   renderHead();
   renderRows(ref);
   draw(ref, lo, hi);
+}
+
+function rowKey(r) {
+  return r.group ? `g:${r.group.key}` : `${r.entry.ds}|${r.entry.start}|${r.entry.model}|${r.entry.variant}`;
 }
 
 function groupModels(rows) {
@@ -578,6 +584,7 @@ function renderRows(ref) {
     tr.innerHTML = `<td>${i + 1}</td>${metric}
       <td class="name"><span class="thumb" style="background:${color}"></span>${name}</td>
       <td><span class="src">${source}</span></td>`;
+    if (i === state.active) tr.classList.add('active');
     tr.onclick = () => { state.active = state.active === i ? -1 : i; [...tb.children].forEach((c) => c.classList.remove('active')); if (state.active >= 0) tr.classList.add('active'); draw(ref, Number($('lo').value), Number($('hi').value)); };
     tb.appendChild(tr);
   });

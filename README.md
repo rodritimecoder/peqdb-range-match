@@ -109,9 +109,11 @@ The **Flatten Diamond** button re-bases the view on the PEQdB Diamond target:
 Diamond becomes 0 dB and every other target and candidate is shown as its
 deviation from Diamond. The match scores are unchanged — subtracting the same
 curve from both sides cancels — but the graph and the target comparison become
-Diamond-relative. It works in both tabs and is deep-linkable as `?flat=1`. The
-PEQdB `Baseline → Flat Line` target is still available in the target dropdown
-for a plain 0 dB reference.
+Diamond-relative. A highlighted row stays highlighted when you toggle, so the
+curve you are looking at is re-based in place rather than the graph dropping
+back to the top five. It works in both tabs and is deep-linkable as `?flat=1`.
+The PEQdB `Baseline → Flat Line` target is still available in the target
+dropdown for a plain 0 dB reference.
 
 ## Squig mode
 
