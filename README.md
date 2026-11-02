@@ -18,7 +18,8 @@ Everything runs locally: no account, no API key, no telemetry.
 
 ## Quick start
 
-Requires **Node 18 or newer**. No dependencies, no build step.
+Requires **Node 18 or newer**. No dependencies. The optional Real AutoEQ
+overlay needs a C compiler; everything else runs as-is.
 
 ```sh
 git clone https://github.com/rodritimecoder/peqdb-range-match.git
@@ -34,9 +35,9 @@ extracts the 16 target curves (15 preferences plus a Flat Line baseline) into
 
 ## Platforms
 
-Linux, macOS and Windows. The server is plain Node — no native modules, no
-shell-outs, no POSIX-only APIs — and it binds loopback only. The command is the
-same in a POSIX shell, PowerShell or Command Prompt:
+Linux, macOS and Windows. The server is plain Node; the only native piece is
+the optional `autoeq-c` binary, built locally. It binds loopback only. The
+command is the same in a POSIX shell, PowerShell or Command Prompt:
 
 ```sh
 node server.mjs
@@ -100,6 +101,35 @@ model, using the median score and the median rig's curve; `min n` hides models
 with fewer than that many measurements. Measurement spread is real: the Simgot
 EM6L ranges from 0.88 to 3.82 over its 11 measurements, so one smooth rig is
 not the model.
+
+## Real AutoEQ (optional)
+
+The **Real AutoEQ** button in the Match card runs the vendored
+[`autoeq-c`](https://github.com/peqdb/autoeq-c) optimizer for the selected row:
+10 filters, an overall gain offset, and the actual biquad response. It draws
+the corrected curve in red and lists the preset under the graph.
+
+Build the binary once:
+
+```sh
+npm run build:autoeq
+```
+
+This compiles `vendor/autoeq-c/src` with `cc`, `gcc` or `clang` into
+`bin/autoeq` (gitignored). Without it the button is disabled; the rest of the
+app is unchanged.
+
+The **smooth** selector chooses autoeq-c's preprocessing:
+
+- **precise** — no smoothing; the best raw 2k–20k fit.
+- **IE / OE** — rig-aware adaptive smoothing and a treble roll-off. These are
+  the modes AutoEQ uses for a subjectively better preset, but the raw 2k–20k
+  residual can be higher above ~14 kHz because the optimizer deliberately stops
+  chasing the treble.
+
+The 5-band score remains the ranking metric; AutoEQ is a per-row detail view.
+`autoeq-c` is LGPL-3.0-or-later; it is vendored under `vendor/autoeq-c` with its
+own license and built as a separate executable, not linked into the MIT code.
 
 ## Default reference
 
@@ -207,8 +237,9 @@ node test.mjs
 ```
 
 The suite covers decode/normalise/band maths, raw RMSE, the 5-band EQ fit
-(broad bump, comb, narrow spike), roughness, the Diamond default and its
-relative view, and the squig record/phone-book encoders.
+(broad bump, comb, narrow spike), roughness, the AutoEQ biquad response, the
+Diamond default and its relative view, and the squig record/phone-book
+encoders.
 
 ## Data and attribution
 
@@ -219,3 +250,6 @@ relative view, and the squig record/phone-book encoders.
   [squig.link](https://squig.link); the builder fetches them from each site.
 - The code is MIT (see [LICENSE](LICENSE)). The data is not covered by that
   license.
+- The optional AutoEQ engine in `vendor/autoeq-c` is LGPL-3.0-or-later,
+  copyright PEQdB Inc.; see `vendor/autoeq-c/LICENSE`. It is compiled into a
+  separate executable and is not linked into the MIT code.

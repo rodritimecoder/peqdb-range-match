@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { anchor, averageChannels, bandIndices, decodeCurve, parseCurveText, scoreBand, FREQS, N } from './public/core.mjs';
 import { eqResidual, fitCurve, makeEqBank, roughness } from './public/eq.mjs';
+import { correctedCurve, filterResponse, residualStats } from './public/autoeq.mjs';
 import { encodeRecord, phoneStems } from './build-squig.mjs';
 
 const read = async (name) => {
@@ -137,6 +138,15 @@ const rJagged = roughness(jaggedDev, ea, eb);
 console.log(`roughness: smooth ${rSmooth.toFixed(3)} dB, jagged ${rJagged.toFixed(3)} dB`);
 if (!(rSmooth < rJagged)) throw new Error('roughness should rank smooth below jagged');
 
+const pkCentre = filterResponse('PK', 1000, 6, 1, 1000);
+const pkCut = filterResponse('PK', 1000, -6, 1, 1000);
+if (Math.abs(pkCentre - 6) > 0.05 || Math.abs(pkCut + 6) > 0.05) throw new Error('PK response at centre should equal its gain');
+const autoCurve = correctedCurve(new Float32Array(N), [{ type: 'PK', f0: 1000, gain: 6, q: 1 }], 0);
+const [aa, ab] = bandIndices(200, 2000);
+const autoStats = residualStats(new Float32Array(N), autoCurve, aa, ab);
+if (!(autoStats.rms > 0.5 && autoStats.p90 > 0.5)) throw new Error('AutoEQ response should leave a residual bump');
+console.log(`AutoEQ biquad: PK 1k +6 -> ${pkCentre.toFixed(3)} dB at centre, residual ${autoStats.rms.toFixed(2)} dB over 200–2k`);
+
 const synth = new Float64Array(N);
 for (let k = 0; k < N; k++) synth[k] = Math.sin(k / 21) * 18 - Math.cos(k / 85) * 24;
 const record = encodeRecord(Float64Array.from(synth, Number));
@@ -165,4 +175,4 @@ for (const { phone, want } of stemCases) {
 }
 console.log(`phoneStems: ${stemCases.length} schema shapes expanded correctly`);
 
-console.log('\nOK — decode, normalise, band, scoring, EQ fit, peak-aware score, sorting, parser, Diamond default, Flat Line, squig encoding and phone-book variants all verified');
+console.log('\nOK — decode, normalise, band, scoring, EQ fit, peak-aware score, AutoEQ biquad, sorting, parser, Diamond default, Flat Line, squig encoding and phone-book variants all verified');

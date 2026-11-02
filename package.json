@@ -15,6 +15,7 @@
   "scripts": {
     "start": "node server.mjs",
     "test": "node test.mjs",
+    "build:autoeq": "node tools/build-autoeq.mjs",
     "build:squig": "node build-squig.mjs",
     "rank:squig": "node rank-squig.mjs"
   }

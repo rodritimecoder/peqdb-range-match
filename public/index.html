@@ -79,6 +79,11 @@
   .fitnote { color: #8fa0b5; font-style: italic; }
   .fitline { font-family: var(--mono); font-size: 10.5px; color: var(--muted); margin-top: 6px; line-height: 1.55; }
   .fitline b { color: var(--text); font-weight: 500; }
+  .autoeq { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+  .autoeq button { padding: 5px 10px; font-size: 11.5px; font-family: var(--mono); }
+  .autoeq-status { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+  .autoeq-smooth { display: flex; align-items: center; gap: 5px; margin: 0; font-size: 11px; color: var(--muted); text-transform: none; letter-spacing: 0; }
+  .autoeq-smooth select { width: auto; padding: 3px 6px; font-size: 11px; }
   .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
   .tab { padding: 5px 12px; font-size: 11.5px; font-family: var(--mono); }
   .tab.on { background: #1d3a52; border-color: #2b5580; font-weight: 600; }
@@ -168,6 +173,18 @@
       <canvas id="plot" width="1600" height="600"></canvas>
       <div class="legend" id="legend"></div>
       <div class="fitline" id="fitline"></div>
+      <div class="autoeq">
+        <button id="autoeq" disabled>Real AutoEQ</button>
+        <label class="autoeq-smooth" for="autoeq-smooth">smooth
+          <select id="autoeq-smooth">
+            <option value="x">precise</option>
+            <option value="i">IE</option>
+            <option value="o">OE</option>
+          </select>
+        </label>
+        <span class="autoeq-status" id="autoeq-status"></span>
+      </div>
+      <div class="fitline" id="autoeqline"></div>
     </div>
     <div class="card">
       <div class="head"><h2>Ranking</h2><span class="status" id="count"></span></div>
@@ -184,10 +201,12 @@
 <script type="module">
 import { FREQS, N, F_MIN, F_MAX, anchor, averageChannels, bandIndices, levelAt, parseCurveText, scoreBand } from './core.mjs';
 import { eqResidual, fitCurve, makeEqBank, roughness } from './eq.mjs';
+import { correctedCurve, residualStats } from './autoeq.mjs';
 
 const $ = (id) => document.getElementById(id);
 const COLORS = ['#7cc4ff', '#6ee7a8', '#ffb86b', '#f78fb3', '#b39dff', '#4fd1c5', '#f6e05e'];
-const state = { ds: 'peqdb', refs: { peqdb: null, squig: null }, index: null, buf: null, catalog: [], meta: null, results: [], full: [], active: -1, ref: null, mode: 'rmse', group: false, minN: 2, flattenDiamond: false };
+const AUTO_EQ_COLOR = '#ff5c5c';
+const state = { ds: 'peqdb', refs: { peqdb: null, squig: null }, index: null, buf: null, catalog: [], meta: null, results: [], full: [], active: -1, ref: null, mode: 'rmse', group: false, minN: 2, flattenDiamond: false, autoeqAvailable: false, autoEq: null, autoEqBusy: false };
 const squigStore = { loaded: false, loading: null, sites: [], entries: [], targets: [], targetsLoading: null, meta: null, buf: null };
 const DEFAULT_TARGET = 'PEQdB Diamond';
 const FLAT_TARGET = { name: 'Flat Line', group: 'Baseline', kind: 'BOTH', grid: Array.from({ length: N }, (_, k) => ({ f: Number(FREQS[k].toFixed(2)), v: 0 })) };
@@ -215,6 +234,16 @@ function diamondGrid(anchorHz) {
   if (!target) return null;
   const grid = parseCurveText(target.grid.map((row) => `${row.f} ${row.v}`).join('\n')).grid;
   return anchor(grid, anchorHz);
+}
+
+function currentRef() {
+  const anchorHz = clampF(Number($('anchor').value));
+  const ref = anchor(state.ref.grid, anchorHz);
+  if (state.flattenDiamond) {
+    const d = diamondGrid(anchorHz);
+    if (d) for (let k = 0; k < N; k++) ref[k] -= d[k];
+  }
+  return ref;
 }
 
 function syncFlattenButton() {
@@ -281,6 +310,9 @@ async function boot() {
   peqdbView();
   $('run').disabled = false;
   window.__dbg = { state, levelAt, report };
+  const health = await fetch('/api/health').then((r) => r.json()).catch(() => ({}));
+  state.autoeqAvailable = Boolean(health.autoeq);
+  syncAutoEqButton();
   await loadTargets();
   await applyParams();
   syncFlattenButton();
@@ -462,7 +494,10 @@ function pickFile(file) {
 }
 
 async function run() {
-  if (!state.ref || !state.buf) return;
+  state.autoEq = null;
+  $('autoeq-status').textContent = '';
+  renderAutoEqLine(null);
+  if (!state.ref || !state.buf) { syncAutoEqButton(); return; }
   const lo = clampF(Number($('lo').value));
   const hi = clampF(Number($('hi').value));
   const anchorHz = clampF(Number($('anchor').value));
@@ -520,6 +555,7 @@ async function run() {
   renderHead();
   renderRows(ref);
   draw(ref, lo, hi);
+  syncAutoEqButton();
 }
 
 function rowKey(r) {
@@ -609,7 +645,15 @@ function renderRows(ref) {
       <td class="name"><span class="thumb" style="background:${color}"></span>${name}</td>
       <td><span class="src">${source}</span></td>`;
     if (i === state.active) tr.classList.add('active');
-    tr.onclick = () => { state.active = state.active === i ? -1 : i; [...tb.children].forEach((c) => c.classList.remove('active')); if (state.active >= 0) tr.classList.add('active'); draw(ref, Number($('lo').value), Number($('hi').value)); };
+    tr.onclick = () => {
+      state.active = state.active === i ? -1 : i;
+      state.autoEq = null;
+      $('autoeq-status').textContent = '';
+      [...tb.children].forEach((c) => c.classList.remove('active'));
+      if (state.active >= 0) tr.classList.add('active');
+      syncAutoEqButton();
+      draw(ref, Number($('lo').value), Number($('hi').value));
+    };
     tb.appendChild(tr);
   });
 }
@@ -625,7 +669,8 @@ function draw(ref, lo, hi) {
   const [ia, ib] = bandIndices(Math.min(Math.max(lo, F_MIN), F_MAX), Math.min(Math.max(hi, F_MIN), F_MAX));
   const fit = active?.eq?.filters?.length ? fitCurve(active.eq.filters, ia, ib) : null;
   const corrected = fit ? Float32Array.from(active.curve, (v, k) => v + fit[k]) : null;
-  const curves = [ref, ...shown.map((s) => s.curve), ...(corrected ? [corrected] : [])];
+  const autoEq = active && state.autoEq?.key === rowKey(active) ? state.autoEq : null;
+  const curves = [ref, ...shown.map((s) => s.curve), ...(corrected ? [corrected] : []), ...(autoEq ? [autoEq.corrected] : [])];
   let min = Infinity;
   let max = -Infinity;
   for (const ys of curves) for (let k = ia; k <= ib; k++) { if (ys[k] < min) min = ys[k]; if (ys[k] > max) max = ys[k]; }
@@ -674,6 +719,7 @@ function draw(ref, lo, hi) {
   };
   shown.slice().reverse().forEach((s) => stroke(s.curve, COLORS[state.results.indexOf(s) % COLORS.length], 2.2));
   if (corrected) stroke(corrected, COLORS[state.results.indexOf(active) % COLORS.length], 2.0, [7, 5], ia, ib);
+  if (autoEq) stroke(autoEq.corrected, AUTO_EQ_COLOR, 2.4);
   stroke(ref, '#ffffff', 3.4);
   ctx.restore();
 
@@ -688,8 +734,10 @@ function draw(ref, lo, hi) {
   const leg = $('legend');
   leg.innerHTML = `<span><i style="background:#fff"></i>reference — ${label(state.ref.entry)}${state.flattenDiamond ? ' (Diamond-relative)' : ''}</span>` +
     shown.map((s) => `<span><i style="background:${COLORS[state.results.indexOf(s) % COLORS.length]}"></i>${s.group ? `${s.entry.model} median` : label(s.entry)} ${s.score.toFixed(2)}</span>`).join('') +
+    (autoEq ? `<span><i style="background:${AUTO_EQ_COLOR}"></i>AutoEQ ${autoEq.filters.length}f ${autoEq.stats.rms.toFixed(2)}</span>` : '') +
     (corrected ? '<span class="fitnote">dashed = after 5-band EQ</span>' : '');
   renderFit(active);
+  renderAutoEqLine(autoEq);
 }
 
 function renderFit(active) {
@@ -701,6 +749,81 @@ function renderFit(active) {
     return `${fmtFitHz(b.f)} Q${b.q.toFixed(1)} ${eqGain >= 0 ? '+' : '−'}${Math.abs(eqGain).toFixed(1)}`;
   });
   el.innerHTML = `<b>fit</b> ${active.eq.bands} band${active.eq.bands === 1 ? '' : 's'} · ${fitLabel(active.eq)} dB · ${parts.join(' · ')}`;
+}
+
+function syncAutoEqButton() {
+  const btn = $('autoeq');
+  const ready = state.autoeqAvailable && state.mode === 'eq' && state.active >= 0 && !state.autoEqBusy;
+  const smooth = $('autoeq-smooth').value;
+  const label = smooth === 'x' ? 'precise' : smooth === 'o' ? 'OE' : 'IE';
+  btn.disabled = !ready;
+  btn.textContent = state.autoEqBusy ? 'AutoEQ…' : 'Real AutoEQ';
+  btn.title = state.autoeqAvailable
+    ? `Run autoeq-c (10 filters, ${label}) for the selected measurement`
+    : 'autoeq-c not built — run: npm run build:autoeq';
+  $('autoeq-smooth').disabled = state.autoEqBusy;
+}
+
+function autoEqSummary(autoEq) {
+  const s = autoEq.stats;
+  const smooth = autoEq.smooth === 'x' ? 'precise' : autoEq.smooth === 'o' ? 'OE' : 'IE';
+  const group = autoEq.group ? ' · shown measurement' : '';
+  return `AutoEQ 10f · ${smooth}${group} · ${autoEq.ms} ms · amp ${autoEq.amp >= 0 ? '+' : ''}${autoEq.amp.toFixed(1)} dB · RMS ${s.rms.toFixed(3)} · worst 10% ${s.p90.toFixed(2)} · >1 dB ${(s.frac1 * 100).toFixed(0)}%`;
+}
+
+function renderAutoEqLine(autoEq) {
+  const el = $('autoeqline');
+  if (!autoEq) { el.textContent = ''; return; }
+  const filters = [...autoEq.filters].sort((x, y) => x.f0 - y.f0);
+  const parts = filters.map((f) => `${f.type} ${fmtFitHz(f.f0)} ${f.gain >= 0 ? '+' : '−'}${Math.abs(f.gain).toFixed(1)} Q${f.q.toFixed(1)}`);
+  el.innerHTML = `<b>autoeq</b> ${filters.length} filters · ${parts.join(' · ')}`;
+}
+
+function isActiveKey(key) {
+  return state.active >= 0 && Boolean(state.results[state.active]) && rowKey(state.results[state.active]) === key;
+}
+
+async function runAutoEq() {
+  if (!state.autoeqAvailable || state.mode !== 'eq' || state.active < 0 || state.autoEqBusy) return;
+  const r = state.results[state.active];
+  if (!r) return;
+  const key = rowKey(r);
+  const lo = clampF(Number($('lo').value));
+  const hi = clampF(Number($('hi').value));
+  const [a, b] = bandIndices(lo, hi);
+  const ref = currentRef();
+  const smooth = $('autoeq-smooth').value;
+  state.autoEqBusy = true;
+  state.autoEq = null;
+  $('autoeq-status').textContent = 'optimizing…';
+  renderAutoEqLine(null);
+  syncAutoEqButton();
+  try {
+    const res = await fetch('/api/autoeq', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        dst: Array.from(ref),
+        src: Array.from(r.curve),
+        filters: 10,
+        steps: 3000,
+        smooth,
+      }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? `${res.status}`);
+    if (!isActiveKey(key)) return;
+    const corrected = correctedCurve(r.curve, body.filters, body.amp);
+    const stats = residualStats(ref, corrected, a, b);
+    state.autoEq = { key, smooth, filters: body.filters, amp: body.amp, max: body.max, corrected, stats, ms: body.ms, group: Boolean(r.group) };
+    $('autoeq-status').textContent = autoEqSummary(state.autoEq);
+  } catch (err) {
+    if (isActiveKey(key)) $('autoeq-status').textContent = `⚠ ${err.message}`;
+  } finally {
+    state.autoEqBusy = false;
+    syncAutoEqButton();
+    if (isActiveKey(key)) draw(ref, lo, hi);
+  }
 }
 
 function report() {
@@ -864,6 +987,10 @@ async function switchDs(ds) {
   $('status').textContent = '';
   $('legend').innerHTML = '';
   $('fitline').innerHTML = '';
+  $('autoeq-status').textContent = '';
+  $('autoeqline').innerHTML = '';
+  state.autoEq = null;
+  syncAutoEqButton();
   renderHead();
   if (ds === 'peqdb') {
     if (!peqdbStore.loaded) { $('sub').textContent = 'loading catalogue…'; return; }
@@ -921,6 +1048,14 @@ function switchSquigIntoView() {
 $('tab-peqdb').onclick = () => switchDs('peqdb');
 $('tab-squig').onclick = () => switchDs('squig');
 $('flat').onclick = toggleFlatten;
+$('autoeq').onclick = runAutoEq;
+$('autoeq-smooth').addEventListener('change', () => {
+  state.autoEq = null;
+  $('autoeq-status').textContent = '';
+  syncAutoEqButton();
+  if (!state.ref) return;
+  draw(currentRef(), clampF(Number($('lo').value)), clampF(Number($('hi').value)));
+});
 $('targetSel').addEventListener('change', () => {
   const chosen = squigStore.targets.find((t) => t.name === $('targetSel').value);
   if (chosen) pickTarget(chosen);

@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { createReadStream } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,6 +38,7 @@ const SQUIG_META = join(DATA, 'squig', 'meta.json');
 const SQUIG_TARGETS = join(DATA, 'squig', 'targets.json');
 const SQUIG_BIN = join(DATA, 'squig', 'records.bin');
 const TARGETS = join(DATA, 'targets.json');
+const AUTO_EQ = join(ROOT, 'bin', process.platform === 'win32' ? 'autoeq.exe' : 'autoeq');
 
 async function targetsFile() {
   for (const file of [TARGETS, SQUIG_TARGETS]) if (await exists(file)) return file;
@@ -114,6 +116,57 @@ async function ensureData(log) {
   }
 }
 
+async function readBody(req, limit = 64 * 1024) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit) throw new Error('request body too large');
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+function runAutoEq(input, smooth, filters, steps) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(AUTO_EQ, [smooth, String(filters), String(steps)], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error('autoeq timed out'));
+    }, 10_000);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { out += chunk; });
+    child.stderr.on('data', (chunk) => { err += chunk; });
+    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        reject(new Error(`autoeq exited ${code}: ${err.trim().split('\n').slice(-3).join(' | ')}`));
+        return;
+      }
+      const lines = out.trim().split('\n');
+      const [amp, max] = lines[0].trim().split(/\s+/).map(Number);
+      if (!Number.isFinite(amp)) {
+        reject(new Error('autoeq returned an invalid amp'));
+        return;
+      }
+      const parsed = lines.slice(1).map((line) => {
+        const [type, f0, gain, q] = line.trim().split(/\s+/);
+        return { type, f0: Number(f0), gain: Number(gain), q: Number(q) };
+      }).filter((f) => ['PK', 'LSC', 'HSC'].includes(f.type) && Number.isFinite(f.f0) && Number.isFinite(f.gain) && Number.isFinite(f.q));
+      if (!parsed.length) {
+        reject(new Error('autoeq returned no filters'));
+        return;
+      }
+      resolve({ amp, max, filters: parsed });
+    });
+    child.stdin.end(input);
+  });
+}
+
 function json(res, value, code = 200) {
   const body = JSON.stringify(value);
   res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });
@@ -126,7 +179,7 @@ const server = createServer(async (req, res) => {
 
   try {
     if (path === '/api/health') {
-      return json(res, { ok: true, data: await exists(BIN), targets: Boolean(await targetsFile()), squig: await squigAvailable(), port: PORT });
+      return json(res, { ok: true, data: await exists(BIN), targets: Boolean(await targetsFile()), squig: await squigAvailable(), autoeq: await exists(AUTO_EQ), port: PORT });
     }
     if (path === '/api/meta') {
       return json(res, JSON.parse(await readFile(META, 'utf8')));
@@ -144,6 +197,29 @@ const server = createServer(async (req, res) => {
         'cache-control': 'public, max-age=31536000, immutable',
       });
       return createReadStream(BIN).pipe(res);
+    }
+
+    if (path === '/api/autoeq') {
+      if (req.method !== 'POST') return json(res, { error: 'POST required' }, 405);
+      if (!(await exists(AUTO_EQ))) return json(res, { error: 'autoeq not built', build: 'npm run build:autoeq' }, 503);
+      const body = JSON.parse((await readBody(req)).toString('utf8'));
+      const dst = body.dst;
+      const src = body.src;
+      if (!Array.isArray(dst) || !Array.isArray(src) || dst.length !== 384 || src.length !== 384)
+        return json(res, { error: 'dst and src must be 384-point arrays' }, 400);
+      if (![...dst, ...src].every(Number.isFinite))
+        return json(res, { error: 'dst and src must be finite numbers' }, 400);
+      const smooth = ['i', 'o', 'x'].includes(body.smooth) ? body.smooth : 'i';
+      const filters = Math.max(2, Math.min(32, Number(body.filters) || 10));
+      const steps = Math.max(1, Math.min(20_000, Number(body.steps) || 3000));
+      const input = Buffer.alloc(384 * 4 * 2);
+      for (let k = 0; k < 384; k++) {
+        input.writeFloatLE(dst[k], k * 4);
+        input.writeFloatLE(src[k], 384 * 4 + k * 4);
+      }
+      const t0 = Date.now();
+      const result = await runAutoEq(input, smooth, filters, steps);
+      return json(res, { ...result, ms: Date.now() - t0 });
     }
 
     if (path === '/api/squig-status') {
