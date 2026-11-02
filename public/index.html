@@ -59,7 +59,7 @@
   .drop.over { border-color: var(--accent); color: var(--accent); }
   canvas { width: 100%; height: 300px; display: block; border-radius: 8px; background: #0e1116; }
   table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--line); font-weight: 500; }
+  th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--line); font-weight: 500; white-space: nowrap; }
   td { padding: 5px 8px; border-bottom: 1px solid #191e25; font-family: var(--mono); }
   tbody tr { cursor: pointer; }
   tbody tr:hover { background: #1a202a; }
@@ -76,6 +76,9 @@
   .head h2 { font-size: 13px; margin: 0; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); font-weight: 500; }
   .legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); margin-top: 8px; flex-wrap: wrap; }
   .legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; margin-right: 4px; vertical-align: -1px; }
+  .fitnote { color: #8fa0b5; font-style: italic; }
+  .fitline { font-family: var(--mono); font-size: 10.5px; color: var(--muted); margin-top: 6px; line-height: 1.55; }
+  .fitline b { color: var(--text); font-weight: 500; }
   .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
   .tab { padding: 5px 12px; font-size: 11.5px; font-family: var(--mono); }
   .tab.on { background: #1d3a52; border-color: #2b5580; font-weight: 600; }
@@ -164,6 +167,7 @@
       <div class="head"><h2>Match</h2><span class="status" id="status"></span></div>
       <canvas id="plot" width="1600" height="600"></canvas>
       <div class="legend" id="legend"></div>
+      <div class="fitline" id="fitline"></div>
     </div>
     <div class="card">
       <div class="head"><h2>Ranking</h2><span class="status" id="count"></span></div>
@@ -179,7 +183,7 @@
 
 <script type="module">
 import { FREQS, N, F_MIN, F_MAX, anchor, averageChannels, bandIndices, levelAt, parseCurveText, scoreBand } from './core.mjs';
-import { eqResidual, makeEqBank, roughness } from './eq.mjs';
+import { eqResidual, fitCurve, makeEqBank, roughness } from './eq.mjs';
 
 const $ = (id) => document.getElementById(id);
 const COLORS = ['#7cc4ff', '#6ee7a8', '#ffb86b', '#f78fb3', '#b39dff', '#4fd1c5', '#f6e05e'];
@@ -197,7 +201,7 @@ function isSquig() { return state.ds === 'squig'; }
 
 function scoreHint() {
   const base = state.mode === 'eq'
-    ? 'Score = residual after 5 broad EQ bands (+3/−9 dB) over the band. Lower is easier to EQ.'
+    ? 'Score = ½·RMS + ½·worst 10% (90th pct) of the residual after 5 broad EQ bands (+3/−9 dB). Lower is easier to EQ.'
     : 'Score = raw RMSE in dB across the band. No mean-offset removal, so a level difference counts against the candidate.';
   return state.flattenDiamond ? `${base} Curves are relative to PEQdB Diamond.` : base;
 }
@@ -237,6 +241,7 @@ const toSlider = (hz) => Math.round(1000 * Math.log(hz / F_MIN) / Math.log(F_MAX
 const fromSlider = (v) => F_MIN * Math.pow(F_MAX / F_MIN, v / 1000);
 const clampF = (hz) => Math.min(F_MAX, Math.max(F_MIN, hz));
 const fmtHz = (hz) => hz >= 1000 ? `${(hz / 1000).toFixed(hz >= 10000 ? 0 : 1)}k` : `${Math.round(hz)}`;
+const fmtFitHz = (hz) => hz >= 1000 ? `${(hz / 1000).toFixed(1)}k` : `${Math.round(hz)}`;
 
 const peqdbStore = { loaded: false, buf: null, catalog: [], meta: null, index: null };
 
@@ -492,8 +497,12 @@ async function run() {
     if (!Number.isFinite(s.rmse)) continue;
     const dev = new Float64Array(N);
     for (let k = 0; k < N; k++) dev[k] = curve[k] - ref[k];
-    const eq = bank ? eqResidual(dev.subarray(a, b + 1), bank) : null;
-    cands.push({ entry: e, curve, ...s, eq, rough: roughness(dev, a, b), score: eq ? eq.rms : s.rmse });
+    const eq = bank ? eqResidual(dev.subarray(a, b + 1), bank, { from: a }) : null;
+    cands.push({
+      entry: e, curve, ...s, eq,
+      rough: roughness(dev, a, b),
+      score: eq ? 0.5 * eq.rms + 0.5 * eq.p90 : s.rmse,
+    });
   }
   cands.sort((x, y) => x.score - y.score);
   const grouped = state.group ? groupModels(cands) : cands;
@@ -542,9 +551,15 @@ function groupModels(rows) {
       rough: median(rs, (r) => r.rough),
       eq: rep.eq ? {
         rms: median(rs, (r) => r.eq.rms),
+        p90: median(rs, (r) => r.eq.p90),
+        frac1: median(rs, (r) => r.eq.frac1),
+        rough: median(rs, (r) => r.eq.rough),
+        maxBoost: median(rs, (r) => r.eq.maxBoost),
+        maxCut: median(rs, (r) => r.eq.maxCut),
         maxGain: median(rs, (r) => r.eq.maxGain),
         maxDev: median(rs, (r) => r.eq.maxDev),
         bands: rep.eq.bands,
+        filters: rep.eq.filters,
       } : null,
       group: { key, count: rs.length, min: rs[0].score, max: rs[rs.length - 1].score },
     });
@@ -554,8 +569,15 @@ function groupModels(rows) {
 
 function renderHead() {
   $('thead').innerHTML = state.mode === 'eq'
-    ? '<tr><th style="width:34px">#</th><th style="width:86px">EQ dB</th><th style="width:64px">Gain</th><th style="width:64px">Peak</th><th style="width:70px">Rough</th><th>Model / variant</th><th style="width:150px">Source</th></tr>'
+    ? '<tr><th style="width:34px">#</th><th style="width:78px">Score</th><th style="width:60px">RMS</th><th style="width:86px">Worst 10%</th><th style="width:56px">&gt;1 dB</th><th style="width:86px">Fit</th><th style="width:60px">Rough</th><th>Model / variant</th><th style="width:150px">Source</th></tr>'
     : '<tr><th style="width:34px">#</th><th style="width:86px">RMSE dB</th><th style="width:74px">Δmean</th><th style="width:66px">max</th><th style="width:70px">Rough</th><th>Model / variant</th><th style="width:150px">Source</th></tr>';
+}
+
+function fitLabel(eq) {
+  if (!eq) return '—';
+  const boost = eq.maxBoost >= 0.05 ? `+${eq.maxBoost.toFixed(1)}` : '0';
+  const cut = eq.maxCut >= 0.05 ? `−${eq.maxCut.toFixed(1)}` : '0';
+  return `${boost}/${cut}`;
 }
 
 function renderRows(ref) {
@@ -574,9 +596,11 @@ function renderRows(ref) {
       : `${r.entry.source} · ${r.entry.cat}`;
     const metric = eqMode
       ? `<td><span class="score">${r.score.toFixed(3)}</span><div class="bar"><i style="width:${Math.min(100, (r.score / best) * 100)}%;background:${color}"></i></div></td>
-         <td>${r.eq ? `${r.eq.maxGain >= 0 ? '+' : ''}${r.eq.maxGain.toFixed(1)}` : '—'}</td>
-         <td>${r.eq ? r.eq.maxDev.toFixed(1) : '—'}</td>
-         <td>${r.rough.toFixed(2)}</td>`
+         <td>${r.eq ? r.eq.rms.toFixed(3) : '—'}</td>
+         <td>${r.eq ? r.eq.p90.toFixed(2) : '—'}</td>
+         <td>${r.eq ? `${(r.eq.frac1 * 100).toFixed(0)}%` : '—'}</td>
+         <td title="max boost / max cut across the fitted bands">${r.eq ? fitLabel(r.eq) : '—'}</td>
+         <td>${r.eq ? r.eq.rough.toFixed(2) : '—'}</td>`
       : `<td><span class="score">${r.rmse.toFixed(3)}</span><div class="bar"><i style="width:${Math.min(100, (r.rmse / best) * 100)}%;background:${color}"></i></div></td>
          <td>${r.meanDev >= 0 ? '+' : ''}${r.meanDev.toFixed(2)}</td>
          <td>${r.maxDev.toFixed(1)}</td>
@@ -596,9 +620,12 @@ function draw(ref, lo, hi) {
   const W = c.width;
   const H = c.height;
   const pad = { l: 56, r: 14, t: 14, b: 26 };
-  const shown = state.active >= 0 ? [state.results[state.active]] : state.results.slice(0, 5);
-  const curves = [ref, ...shown.map((s) => s.curve)];
+  const active = state.active >= 0 ? state.results[state.active] : null;
+  const shown = active ? [active] : state.results.slice(0, 5);
   const [ia, ib] = bandIndices(Math.min(Math.max(lo, F_MIN), F_MAX), Math.min(Math.max(hi, F_MIN), F_MAX));
+  const fit = active?.eq?.filters?.length ? fitCurve(active.eq.filters, ia, ib) : null;
+  const corrected = fit ? Float32Array.from(active.curve, (v, k) => v + fit[k]) : null;
+  const curves = [ref, ...shown.map((s) => s.curve), ...(corrected ? [corrected] : [])];
   let min = Infinity;
   let max = -Infinity;
   for (const ys of curves) for (let k = ia; k <= ib; k++) { if (ys[k] < min) min = ys[k]; if (ys[k] > max) max = ys[k]; }
@@ -632,20 +659,21 @@ function draw(ref, lo, hi) {
     ctx.beginPath(); ctx.moveTo(pad.l, Y(db)); ctx.lineTo(W - pad.r, Y(db)); ctx.stroke();
   }
 
-  const stroke = (ys, color, width, dash) => {
+  const stroke = (ys, color, width, dash, from = 0, to = N - 1) => {
     ctx.strokeStyle = color;
     ctx.lineWidth = width;
     ctx.setLineDash(dash || []);
     ctx.beginPath();
-    for (let k = 0; k < N; k++) {
+    for (let k = from; k <= to; k++) {
       const x = X(FREQS[k]);
       const y = Y(ys[k]);
-      if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      if (k === from) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     }
     ctx.stroke();
     ctx.setLineDash([]);
   };
   shown.slice().reverse().forEach((s) => stroke(s.curve, COLORS[state.results.indexOf(s) % COLORS.length], 2.2));
+  if (corrected) stroke(corrected, COLORS[state.results.indexOf(active) % COLORS.length], 2.0, [7, 5], ia, ib);
   stroke(ref, '#ffffff', 3.4);
   ctx.restore();
 
@@ -659,7 +687,20 @@ function draw(ref, lo, hi) {
 
   const leg = $('legend');
   leg.innerHTML = `<span><i style="background:#fff"></i>reference — ${label(state.ref.entry)}${state.flattenDiamond ? ' (Diamond-relative)' : ''}</span>` +
-    shown.map((s) => `<span><i style="background:${COLORS[state.results.indexOf(s) % COLORS.length]}"></i>${s.group ? `${s.entry.model} median` : label(s.entry)} ${s.score.toFixed(2)}</span>`).join('');
+    shown.map((s) => `<span><i style="background:${COLORS[state.results.indexOf(s) % COLORS.length]}"></i>${s.group ? `${s.entry.model} median` : label(s.entry)} ${s.score.toFixed(2)}</span>`).join('') +
+    (corrected ? '<span class="fitnote">dashed = after 5-band EQ</span>' : '');
+  renderFit(active);
+}
+
+function renderFit(active) {
+  const el = $('fitline');
+  if (!active?.eq?.filters?.length) { el.innerHTML = ''; return; }
+  const bands = [...active.eq.filters].sort((x, y) => x.f - y.f);
+  const parts = bands.map((b) => {
+    const eqGain = -b.gain;
+    return `${fmtFitHz(b.f)} Q${b.q.toFixed(1)} ${eqGain >= 0 ? '+' : '−'}${Math.abs(eqGain).toFixed(1)}`;
+  });
+  el.innerHTML = `<b>fit</b> ${active.eq.bands} band${active.eq.bands === 1 ? '' : 's'} · ${fitLabel(active.eq)} dB · ${parts.join(' · ')}`;
 }
 
 function report() {
@@ -678,26 +719,30 @@ function report() {
     `anchor      normalised to 0 dB at ${Math.round(anchorHz)} Hz`,
     ...(state.flattenDiamond ? ['view        Diamond-relative (every curve minus the PEQdB Diamond target)'] : []),
     eqMode
-      ? 'metric      5-band EQ residual in dB (+3/−9 dB) over the band; lower is easier to EQ'
+      ? 'metric      ½·RMS + ½·worst-10% of the 5-band EQ residual (+3/−9 dB); lower is easier to EQ'
       : 'metric      raw RMSE in dB over the band, no mean-offset removal; lower is better',
+    ...(eqMode ? ['columns     eq_rms = mean residual; worst10 = 90th percentile |residual|; >1dB = share of band over 1 dB; fit = max boost / max cut'] : []),
     `compared    ${(state.full?.length ?? 0).toLocaleString()} measurements${state.group ? ` · grouped by model (median, min n=${state.minN}, ${state.results.length} shown)` : ''}`,
     '',
     eqMode
-      ? '  rank   eq_db  gain_db  peak_db  rough_db   pts  model / variant [source]'
+      ? '  rank   score  eq_rms  worst10  >1dB           fit  rough_db   pts  model / variant [source]'
       : '  rank   rmse_db  mean_db  max_db  rough_db   pts  model / variant [source]',
     eqMode
-      ? '  ----   -----  -------  -------  --------   ---  ----------------------------'
+      ? '  ----   -----  ------  -------  ----  ------------  --------   ---  ----------------------------'
       : '  ----   -------  -------  ------  --------   ---  ----------------------------',
   ];
   state.results.forEach((r, i) => {
     const tag = r.group ? ` (median of n=${r.group.count}, ${r.group.min.toFixed(2)}–${r.group.max.toFixed(2)})` : '';
     const suffix = `${label(r.entry)}${tag} [${r.entry.source}${r.entry.cat !== '—' ? ` / ${r.entry.cat}` : ''}]`;
     if (eqMode) {
-      const gain = r.eq ? `${r.eq.maxGain >= 0 ? '+' : ''}${r.eq.maxGain.toFixed(1)}` : '—';
-      const peak = r.eq ? r.eq.maxDev.toFixed(1) : '—';
+      const rms = r.eq ? r.eq.rms.toFixed(3) : '—';
+      const p90 = r.eq ? r.eq.p90.toFixed(2) : '—';
+      const frac = r.eq ? `${(r.eq.frac1 * 100).toFixed(0)}%` : '—';
+      const fit = r.eq ? fitLabel(r.eq) : '—';
+      const rough = r.eq ? r.eq.rough.toFixed(2) : '—';
       lines.push(
-        `${String(i + 1).padStart(6)}${r.score.toFixed(3).padStart(8)}${gain.padStart(8)}${peak.padStart(8)}` +
-        `${r.rough.toFixed(2).padStart(10)}${String(r.points).padStart(6)}  ${suffix}`
+        `${String(i + 1).padStart(6)}${r.score.toFixed(3).padStart(8)}${rms.padStart(8)}${p90.padStart(8)}` +
+        `${frac.padStart(6)}${fit.padStart(14)}${rough.padStart(10)}${String(r.points).padStart(6)}  ${suffix}`
       );
     } else {
       const mean = `${r.meanDev >= 0 ? '+' : ''}${r.meanDev.toFixed(2)}`;
@@ -818,6 +863,7 @@ async function switchDs(ds) {
   $('count').textContent = '';
   $('status').textContent = '';
   $('legend').innerHTML = '';
+  $('fitline').innerHTML = '';
   renderHead();
   if (ds === 'peqdb') {
     if (!peqdbStore.loaded) { $('sub').textContent = 'loading catalogue…'; return; }

@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { anchor, averageChannels, bandIndices, decodeCurve, parseCurveText, scoreBand, FREQS, N } from './public/core.mjs';
-import { eqResidual, makeEqBank, roughness } from './public/eq.mjs';
+import { eqResidual, fitCurve, makeEqBank, roughness } from './public/eq.mjs';
 import { encodeRecord, phoneStems } from './build-squig.mjs';
 
 const read = async (name) => {
@@ -106,12 +106,29 @@ const combFit = eqResidual(Float64Array.from({ length: eqN }, (_, i) => (i % 8 <
 const spikeFit = eqResidual(bump(1.2), eqBank);
 const flatFit = eqResidual(new Float64Array(eqN), eqBank);
 const hugeFit = eqResidual(Float64Array.from({ length: eqN }, () => 20), eqBank);
+const deepFit = eqResidual(Float64Array.from({ length: eqN }, () => -20), eqBank);
 console.log(`EQ fit: broad ${broadFit.rms.toFixed(3)} dB, comb ${combFit.rms.toFixed(3)} dB, spike peak ${spikeFit.maxDev.toFixed(2)} dB, flat ${flatFit.rms}`);
 if (flatFit.rms !== 0) throw new Error('flat deviation should fit to zero');
+if (flatFit.p90 !== 0 || flatFit.frac1 !== 0) throw new Error('flat deviation should have no tail');
 if (broadFit.rms > 0.5) throw new Error('broad bump should fit within 0.5 dB');
 if (combFit.rms <= broadFit.rms + 0.2) throw new Error('comb should leave more residual than a broad bump');
 if (spikeFit.maxDev < 2) throw new Error('narrow spike should leave a peak residual');
-if (hugeFit.maxGain > 3.0001) throw new Error('boost limit not applied');
+if (hugeFit.maxGain > 9.0001) throw new Error('cut limit not applied');
+if (deepFit.maxBoost > 3.0001) throw new Error('boost limit not applied');
+if (!(combFit.p90 > broadFit.p90)) throw new Error('comb should have a worse tail than a broad bump');
+if (deepFit.frac1 !== 1) throw new Error('20 dB boost deficit should leave the whole band over 1 dB');
+if (hugeFit.maxCut < 8.9 || hugeFit.maxBoost !== 0) throw new Error('cut limit not reported');
+if (deepFit.maxBoost < 2.9 || deepFit.maxCut !== 0) throw new Error('boost fit should not cut');
+const spikeScore = 0.5 * spikeFit.rms + 0.5 * spikeFit.p90;
+const broadScore = 0.5 * broadFit.rms + 0.5 * broadFit.p90;
+if (!(spikeScore > broadScore)) throw new Error('peak-aware score should rank a spike below a broad bump');
+const bumpRaw = bump(20);
+const correction = fitCurve(broadFit.filters, ea, eb);
+let correctedSse = 0;
+for (let i = 0; i < eqN; i++) { const v = bumpRaw[i] + correction[ea + i]; correctedSse += v * v; }
+const correctedRms = Math.sqrt(correctedSse / eqN);
+if (!(correctedRms < 0.5)) throw new Error('fitCurve should reconstruct the fitted residual');
+console.log(`EQ tail: broad p90 ${broadFit.p90.toFixed(2)} dB, comb p90 ${combFit.p90.toFixed(2)} dB, spike p90 ${spikeFit.p90.toFixed(2)} dB, corrected ${correctedRms.toFixed(3)} dB`);
 
 const smoothDev = Float64Array.from({ length: N }, (_, k) => Math.sin(k / 40) * 2);
 const jaggedDev = Float64Array.from({ length: N }, (_, k) => (k % 2 ? 1 : -1) * 2);
@@ -148,4 +165,4 @@ for (const { phone, want } of stemCases) {
 }
 console.log(`phoneStems: ${stemCases.length} schema shapes expanded correctly`);
 
-console.log('\nOK — decode, normalise, band, scoring, EQ fit, sorting, parser, Diamond default, Flat Line, squig encoding and phone-book variants all verified');
+console.log('\nOK — decode, normalise, band, scoring, EQ fit, peak-aware score, sorting, parser, Diamond default, Flat Line, squig encoding and phone-book variants all verified');

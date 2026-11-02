@@ -81,20 +81,24 @@ actually apply. **Treble EQ (5 bands)** ranks by what is left after a realistic
 EQ fit:
 
 - the deviation from the reference is fitted with 5 broad peaking bands
-  (½-octave centres, Q 0.7–1.4)
+  (one per ½-octave centre, Q 0.7–1.4)
 - gains are limited to **+3 / −9 dB** (cuts deeper than boosts)
-- the score is the RMS residual over the band, so broad errors are cheap and
-  narrow ones remain
+- the score is **½ × RMS + ½ × worst 10%** of the residual, so a narrow spike
+  or a broad bad region cannot hide in the average
+- **>1 dB** shows how much of the band is still more than 1 dB off after the fit
 
-The table adds **Gain** (largest filter used), **Peak** (worst residual point)
-and **Rough** (RMS of the deviation after 1/6-octave smoothing, a pure
-smoothness diagnostic). Selecting the mode narrows the band to 2k–20k when it
-was wider; any band still works.
+The table shows **Score** (½ RMS + ½ worst 10%), **RMS**, **Worst 10%**
+(90th-percentile residual), **>1 dB** (share of the band over 1 dB), **Fit**
+(largest boost / cut) and **Rough** (RMS of the residual after 1/6-octave
+smoothing). Selecting a row draws the fitted curve dashed over the raw one and
+lists the chosen bands (centre, Q, gain) under the graph, so the score is
+auditable. Selecting the mode narrows the band to 2k–20k when it was wider;
+any band still works.
 
 **Group by model (median)** collapses the per-measurement rows into one row per
 model, using the median score and the median rig's curve; `min n` hides models
 with fewer than that many measurements. Measurement spread is real: the Simgot
-EM6L ranges from 0.66 to 3.22 dB over its 11 measurements, so one smooth rig is
+EM6L ranges from 0.88 to 3.82 over its 11 measurements, so one smooth rig is
 not the model.
 
 ## Default reference
